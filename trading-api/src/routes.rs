@@ -4,7 +4,9 @@ use axum::{
 };
 use serde_json::json;
 use trading_common::{
-    error::AppError, CopyTradeSettings, SupabaseClient, TrackedWallet, TransactionLog,
+    error::AppError,
+    models::{BuyRequest, SellRequest},
+    CopyTradeSettings, SupabaseClient, TrackedWallet, TransactionLog,
 };
 use uuid::Uuid;
 
@@ -97,4 +99,16 @@ pub async fn get_transaction_history(
 ) -> Result<Json<Vec<TransactionLog>>, AppError> {
     let transactions = client.get_transaction_history().await?;
     Ok(Json(transactions))
+}
+
+pub async fn buy_pump_fun_token(
+    Json(buy_request): Json<BuyRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    unimplemented!()
+}
+
+pub async fn sell_pump_fun_token(
+    Json(sell_request): Json<SellRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    unimplemented!()
 }

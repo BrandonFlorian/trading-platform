@@ -102,3 +102,36 @@ pub struct WalletUpdateNotification {
     #[serde(rename = "type")]
     pub type_: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BuyRequest {
+    pub token_address: String,
+    pub sol_quantity: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BuyResponse {
+    pub success: bool,
+    pub signature: String,
+    pub solscan_tx_url: String,
+    pub token_quantity: f64,
+    pub sol_spent: f64,
+    pub error: Option<String>,
+}
+
+//sell request
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SellRequest {
+    pub token_address: String,
+    pub token_quantity: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SellResponse {
+    pub success: bool,
+    pub signature: String,
+    pub token_quantity: f64,
+    pub sol_received: f64,
+    pub solscan_tx_url: String,
+    pub error: Option<String>,
+}

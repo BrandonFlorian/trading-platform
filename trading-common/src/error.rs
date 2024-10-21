@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use solana_client::client_error::ClientError;
 use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -29,11 +30,12 @@ pub enum AppError {
 
     #[error("Port parse error: {0}")]
     PortParseError(#[from] std::num::ParseIntError),
-    // #[error("Not found: {0}")]
-    // NotFound(String),
 
-    // #[error("Internal server error")]
-    // InternalServerError,
+    #[error("Surf error: {0}")]
+    SurfError(String),
+
+    #[error("Solana RPC error: {0}")]
+    SolanaRpcError(#[from] ClientError),
 }
 
 impl IntoResponse for AppError {
@@ -47,8 +49,8 @@ impl IntoResponse for AppError {
             AppError::ConfigError(message) => (StatusCode::BAD_REQUEST, message),
             AppError::ServerError(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             AppError::PortParseError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
-            // AppError::NotFound(message) => (StatusCode::NOT_FOUND, message),
-            // AppError::InternalServerError => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()),
+            AppError::SurfError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::SolanaRpcError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
         };
 
         (status, error_message).into_response()
@@ -64,5 +66,11 @@ impl From<serde_json::Error> for AppError {
 impl From<AnyhowError> for AppError {
     fn from(err: AnyhowError) -> Self {
         AppError::ServerError(err.to_string())
+    }
+}
+
+impl From<surf::Error> for AppError {
+    fn from(err: surf::Error) -> Self {
+        AppError::SurfError(err.to_string())
     }
 }
