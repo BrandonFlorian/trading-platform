@@ -13,3 +13,5 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 trading-common = { path = "../trading-common" }
+arc-swap = { workspace = true }
+solana-client = { workspace = true }

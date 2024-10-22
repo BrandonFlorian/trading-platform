@@ -9,6 +9,9 @@ use solana_sdk::{
     signer::Signer, transaction::Transaction,
 };
 use std::str::FromStr;
+
+use crate::models::{BuyRequest, BuyResponse, SellRequest, SellResponse};
+use solana_sdk::signature::Keypair;
 // use crate::constants::{
 //     EVENT_AUTHORITY, FEE_RECIPIENT, GLOBAL, PUMP_FUN_PROGRAM_ID, SYSTEM_PROGRAM,
 //     TOKEN_KEG_PROGRAM_ID,
@@ -328,4 +331,98 @@ fn build_keys(
         AccountMeta::new_readonly(EVENT_AUTHORITY, false),
         AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false),
     ]
+}
+
+pub async fn execute_pump_fun_buy(
+    rpc_client: &RpcClient,
+    server_keypair: &Keypair,
+    request: BuyRequest,
+) -> Result<BuyResponse, AppError> {
+    let token_address = Pubkey::from_str(&request.token_address)
+        .map_err(|e| AppError::BadRequest(format!("Invalid token address: {}", e)))?;
+
+    let coin_data = get_coin_data(&token_address).await?;
+
+    let pump_fun_token_container = PumpFunTokenContainer {
+        mint_address: token_address,
+        pump_fun_coin_data: Some(coin_data),
+        program_account_info: None,
+    };
+
+    let token_account_address = spl_associated_token_account::get_associated_token_address(
+        &server_keypair.pubkey(),
+        &token_address,
+    );
+
+    let token_account_container = TokenAccountOwnerContainer {
+        owner_address: server_keypair.pubkey(),
+        mint_address: token_address,
+        token_account_address: Some(token_account_address),
+    };
+
+    let signature = buy(
+        rpc_client,
+        server_keypair,
+        &token_account_container,
+        &pump_fun_token_container,
+        request.sol_quantity,
+        0.01, // Default slippage of 1%
+    )
+    .await?;
+
+    Ok(BuyResponse {
+        success: true,
+        signature: signature.clone(),
+        solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
+        token_quantity: 0.0, // fix this later
+        sol_spent: request.sol_quantity,
+        error: None,
+    })
+}
+
+pub async fn execute_pump_fun_sell(
+    rpc_client: &RpcClient,
+    server_keypair: &Keypair,
+    request: SellRequest,
+) -> Result<SellResponse, AppError> {
+    let token_address = Pubkey::from_str(&request.token_address)
+        .map_err(|e| AppError::BadRequest(format!("Invalid token address: {}", e)))?;
+
+    let coin_data = get_coin_data(&token_address).await?;
+
+    let pump_fun_token_container = PumpFunTokenContainer {
+        mint_address: token_address,
+        pump_fun_coin_data: Some(coin_data),
+        program_account_info: None,
+    };
+
+    let token_account_address = spl_associated_token_account::get_associated_token_address(
+        &server_keypair.pubkey(),
+        &token_address,
+    );
+
+    let token_account_container = TokenAccountOwnerContainer {
+        owner_address: server_keypair.pubkey(),
+        mint_address: token_address,
+        token_account_address: Some(token_account_address),
+    };
+
+    let signature = sell(
+        rpc_client,
+        server_keypair,
+        &token_account_container,
+        &pump_fun_token_container,
+        (request.token_quantity * 1e9) as u64, // Convert to lamports
+        0.01,                                  // Default slippage of 1%
+    )
+    .await?;
+
+    Ok(SellResponse {
+        success: true,
+        signature: signature.clone(),
+        token_quantity: request.token_quantity,
+        sol_received: 0.0, // fix me
+        solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
+        error: None,
+    })
 }

@@ -6,17 +6,18 @@ use solana_account_decoder::UiAccountData;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcTransactionConfig};
 use solana_program::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Keypair;
 use solana_sdk::signature::Signature;
 use spl_token::state::Mint;
 use std::sync::Arc;
 use std::time::Duration;
 use surf::{Client, Url};
 use tokio::time::sleep;
+
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
 pub const METADATA_PROGRAM_ID: Pubkey =
     solana_program::pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
-
 const IPFS_GATEWAYS: &[&str] = &[
     "https://ipfs.io/ipfs/",
     "https://cloudflare-ipfs.com/ipfs/",
@@ -33,6 +34,12 @@ pub struct TokenMetadata {
     pub name: String,
     pub symbol: String,
     pub uri: String,
+}
+
+pub fn get_server_keypair() -> Keypair {
+    let secret_key =
+        std::env::var("SERVER_WALLET_SECRET_KEY").expect("SERVER_WALLET_SECRET_KEY must be set");
+    Keypair::from_base58_string(&secret_key)
 }
 
 pub fn decode_mint_account(account_data: &[u8]) -> Result<Mint> {
