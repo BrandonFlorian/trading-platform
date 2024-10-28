@@ -6,10 +6,11 @@ use axum::{
 };
 use dotenv::dotenv;
 use solana_client::rpc_client::RpcClient;
+use solana_sdk::signer::Signer;
 use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
-use trading_common::SupabaseClient;
+use trading_common::{utils::get_server_keypair, SupabaseClient};
 mod routes;
 
 #[derive(Clone)]
@@ -26,8 +27,11 @@ async fn main() -> Result<()> {
     let supabase_service_role_key =
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
     let supabase_key = env::var("SUPABASE_API_KEY").context("SUPABASE_API_KEY must be set")?;
-    let rpc_url = env::var("SOLANA_RPC_URL").expect("SOLANA_RPC_URL must be set");
-    let user_id = env::var("USER_ID").context("USER_ID must be set")?;
+    let rpc_url = env::var("SOLANA_RPC_HTTP_URL").context("SOLANA_RPC_HTTP_URL must be set")?;
+
+    let server_keypair = get_server_keypair();
+    let user_id = server_keypair.pubkey().to_string();
+    println!("user_id: {}", user_id);
 
     let supabase_client = SupabaseClient::new(
         &supabase_url,
@@ -80,7 +84,7 @@ async fn main() -> Result<()> {
         .route("/pump_fun/sell", post(routes::pump_fun_sell))
         .with_state(state);
 
-    let port = env::var("APP_PORT").unwrap_or_else(|_| "3001".to_string());
+    let port = env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = SocketAddr::from(([0, 0, 0, 0], port.parse()?));
 
     println!("Server running on {}", addr);

@@ -14,6 +14,8 @@ use std::time::Duration;
 use surf::{Client, Url};
 use tokio::time::sleep;
 
+use crate::error::AppError;
+
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
 pub const METADATA_PROGRAM_ID: Pubkey =
@@ -235,7 +237,7 @@ pub async fn confirm_transaction(
     signature: &Signature,
     max_retries: u32,
     retry_interval: u64,
-) -> Result<bool> {
+) -> Result<bool, AppError> {
     let mut retries = 0;
 
     while retries < max_retries {
@@ -247,32 +249,31 @@ pub async fn confirm_transaction(
                 max_supported_transaction_version: Some(0),
             },
         ) {
-            Ok(confirmed_transaction) => {
-                if let Some(meta) = confirmed_transaction.transaction.meta {
+            Ok(confirmed_tx) => {
+                if let Some(meta) = confirmed_tx.transaction.meta {
                     if meta.err.is_none() {
-                        println!("Transaction confirmed... try count: {}", retries);
+                        println!("Transaction confirmed... try count: {}", retries + 1);
                         return Ok(true);
-                    } else {
-                        println!("Transaction failed.");
-                        return Ok(false);
                     }
+                    println!("Transaction failed.");
+                    return Ok(false);
                 }
             }
-
             Err(e) => {
+                println!(
+                    "Awaiting confirmation... try count: {}/{}",
+                    retries + 1,
+                    max_retries
+                );
                 if e.to_string().contains("Transaction version") {
                     println!("Transaction failed.");
                     return Ok(false);
                 }
-                println!(
-                    "Error: {}. Awaiting confirmation... try count: {}",
-                    e, retries
-                );
             }
         }
 
         retries += 1;
-        sleep(Duration::from_secs(retry_interval)).await;
+        tokio::time::sleep(Duration::from_secs(retry_interval)).await;
     }
 
     println!("Max retries reached. Transaction confirmation failed.");
@@ -292,4 +293,17 @@ pub async fn sleeper(
     sleep(Duration::from_secs(retry_interval)).await;
 
     *retry_count
+}
+
+pub async fn get_token_balance(
+    rpc_client: &RpcClient,
+    token_account: &Pubkey,
+) -> Result<f64, AppError> {
+    let account = rpc_client
+        .get_token_account_balance(token_account)
+        .map_err(|e| AppError::SolanaRpcError(e))?;
+
+    Ok(account
+        .ui_amount
+        .ok_or_else(|| AppError::BadRequest("Failed to get token balance".to_string()))?)
 }

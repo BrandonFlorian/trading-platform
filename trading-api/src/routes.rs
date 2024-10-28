@@ -7,8 +7,8 @@ use serde_json::json;
 use std::sync::Arc;
 use trading_common::{
     error::AppError,
-    execute_pump_fun_buy, execute_pump_fun_sell,
     models::{BuyRequest, BuyResponse, SellRequest, SellResponse},
+    process_buy_request, process_sell_request,
     utils::get_server_keypair,
     CopyTradeSettings, SupabaseClient, TrackedWallet, TransactionLog,
 };
@@ -129,7 +129,8 @@ pub async fn pump_fun_buy(
 ) -> Result<Json<BuyResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
-    let response = execute_pump_fun_buy(&rpc_client, &server_keypair, request).await?;
+    println!("request: {:?}", request);
+    let response = process_buy_request(&rpc_client, &server_keypair, request).await?;
     Ok(Json(response))
 }
 
@@ -139,6 +140,7 @@ pub async fn pump_fun_sell(
 ) -> Result<Json<SellResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
-    let response = execute_pump_fun_sell(&rpc_client, &server_keypair, request).await?;
+    println!("request: {:?}", request);
+    let response = process_sell_request(&rpc_client, &server_keypair, request).await?;
     Ok(Json(response))
 }
