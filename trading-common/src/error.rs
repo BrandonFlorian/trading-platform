@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use solana_client::client_error::ClientError;
+use solana_sdk::pubkey::ParsePubkeyError;
 use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -36,6 +37,9 @@ pub enum AppError {
 
     #[error("Solana RPC error: {0}")]
     SolanaRpcError(#[from] ClientError),
+
+    #[error("Pubkey parse error: {0}")]
+    PubkeyParseError(#[from] ParsePubkeyError),
 }
 
 impl IntoResponse for AppError {
@@ -51,6 +55,7 @@ impl IntoResponse for AppError {
             AppError::PortParseError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::SurfError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::SolanaRpcError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::PubkeyParseError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
         };
 
         (status, error_message).into_response()

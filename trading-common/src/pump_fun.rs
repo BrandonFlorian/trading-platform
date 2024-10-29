@@ -1,21 +1,24 @@
 use crate::error::AppError;
 use anyhow::{Context, Result};
-use thiserror::Error;
-
 use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
+use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::signature::Keypair;
 use solana_sdk::{
     instruction::AccountMeta, instruction::Instruction, message::Message, pubkey::Pubkey,
     signer::Signer, transaction::Transaction,
 };
+use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
+use thiserror::Error;
 
 use crate::models::{BuyRequest, BuyResponse, SellRequest, SellResponse};
 use crate::utils::{confirm_transaction, get_token_balance};
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::signature::Keypair;
-const UNIT_PRICE: u64 = 1_000;
-const UNIT_BUDGET: u32 = 200_000;
+use solana_client::rpc_config::RpcSendTransactionConfig;
+
+const UNIT_PRICE: u64 = 1_000_000; // Match Python exactly
+const UNIT_BUDGET: u32 = 100_000; // Match Python exactly
 const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PumpFunCoinData {
@@ -327,60 +330,96 @@ pub async fn sell(
 ) -> Result<String, AppError> {
     let user_address = secret_keypair.pubkey();
 
-    // Python implementation uses these exact decimal values
-    let sol_decimal = 1_000_000_000f64; // 1e9
-    let token_decimal = 1_000_000f64; // 1e6 for calculation
-
-    let virtual_sol_reserves = pump_fun_token_container
-        .pump_fun_coin_data
-        .as_ref()
-        .unwrap()
-        .virtual_sol_reserves as f64
-        / sol_decimal;
-
-    let virtual_token_reserves = pump_fun_token_container
-        .pump_fun_coin_data
-        .as_ref()
-        .unwrap()
-        .virtual_token_reserves as f64
-        / token_decimal;
-
-    // Calculate price per token (matching Python exactly)
-    let token_price = virtual_sol_reserves / virtual_token_reserves;
-    println!("Token Price: {:.20} SOL", token_price);
-
-    // Calculate raw amount (needs to be in token decimals)
-    let amount = (token_quantity * token_decimal) as u64;
-
-    // Calculate SOL output (matching Python)
-    let sol_out = token_quantity * token_price;
-    let sol_out_with_slippage = sol_out * (1.0 - slippage);
-    let min_sol_output = (sol_out_with_slippage * sol_decimal) as u64;
-
-    println!("Sell calculation:");
-    println!("Token quantity: {}", token_quantity);
-    println!("Amount (raw): {}", amount);
-    println!("Expected SOL output: {}", sol_out);
-    println!("Min SOL output (with slippage): {}", sol_out_with_slippage);
-    println!("Min SOL output (lamports): {}", min_sol_output);
-
-    // Build instruction data
-    let mut data = Vec::with_capacity(24);
-    data.extend_from_slice(&[51, 230, 133, 164, 1, 127, 131, 173]); // "33e685a4017f83ad"
-    data.extend_from_slice(&amount.to_le_bytes());
-    data.extend_from_slice(&min_sol_output.to_le_bytes());
-
-    let accounts = build_pump_fun_accounts(
-        &user_address,
-        pump_fun_token_container,
-        &token_account_container.token_account_address.unwrap(),
+    println!(
+        "Selling token with Pump.fun DEX with keypair: {}",
+        secret_keypair.pubkey()
     );
 
+    // Get current token balance
+    let token_holdings = rpc_client
+        .get_token_account_balance(&token_account_container.token_account_address.unwrap())?;
+
+    println!("Token account balance retrieved: {}", token_holdings.amount);
+
+    let token_balance = token_holdings.amount.parse::<u64>().unwrap();
+    let token_decimals = token_holdings.decimals;
+    println!("Token balance: {} (smallest unit)", token_balance);
+    println!("Token decimals: {}", token_decimals);
+
+    // Get virtual reserves
+    let (virtual_token_reserves, virtual_sol_reserves) =
+        get_bonding_curve_info(rpc_client, pump_fun_token_container).await?;
+
+    println!(
+        "Token Reserves for {}",
+        token_account_container.mint_address
+    );
+    println!("Virtual token reserves: {}", virtual_token_reserves);
+    println!("Virtual sol reserves: {}", virtual_sol_reserves);
+
+    // Calculate price per token
+    let price_per_token = virtual_sol_reserves as f64 / virtual_token_reserves as f64;
+    println!("Price per token: {}", price_per_token);
+
+    // Calculate SOL output
+    let token_amount = token_quantity * 10f64.powi(token_decimals as i32);
+    let expected_sol_output = token_amount * price_per_token;
+    let min_sol_output = (expected_sol_output * (1.0 - slippage)) as u64;
+
+    println!(
+        "Expected SOL output: {} SOL",
+        expected_sol_output / LAMPORTS_PER_SOL as f64
+    );
+    println!(
+        "Minimum SOL output with slippage: {} SOL",
+        min_sol_output as f64 / LAMPORTS_PER_SOL as f64
+    );
+
+    let data = create_sell_instruction_data(token_amount as u64, min_sol_output);
+
+    // Build accounts exactly matching Python implementation
+    let accounts = vec![
+        AccountMeta::new_readonly(GLOBAL, false),
+        AccountMeta::new(FEE_RECIPIENT, false),
+        AccountMeta::new_readonly(pump_fun_token_container.mint_address, false),
+        AccountMeta::new(
+            Pubkey::from_str(
+                &pump_fun_token_container
+                    .pump_fun_coin_data
+                    .as_ref()
+                    .unwrap()
+                    .bonding_curve,
+            )?,
+            false,
+        ),
+        AccountMeta::new(
+            Pubkey::from_str(
+                &pump_fun_token_container
+                    .pump_fun_coin_data
+                    .as_ref()
+                    .unwrap()
+                    .associated_bonding_curve,
+            )?,
+            false,
+        ),
+        AccountMeta::new(
+            token_account_container.token_account_address.unwrap(),
+            false,
+        ),
+        AccountMeta::new(user_address, true),
+        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),
+        AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM_ID, false),
+        AccountMeta::new_readonly(TOKEN_KEG_PROGRAM_ID, false),
+        AccountMeta::new_readonly(EVENT_AUTHORITY, false),
+        AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false),
+    ];
+
+    println!("Building transaction...");
     let instruction = Instruction::new_with_bytes(PUMP_FUN_PROGRAM_ID, &data, accounts);
 
     // Add compute budget instructions
-    let compute_unit_price_ix = ComputeBudgetInstruction::set_compute_unit_price(1_000);
-    let compute_unit_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(100_000);
+    let compute_unit_price_ix = ComputeBudgetInstruction::set_compute_unit_price(UNIT_PRICE);
+    let compute_unit_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(UNIT_BUDGET);
 
     let recent_blockhash = rpc_client.get_latest_blockhash()?;
 
@@ -390,18 +429,31 @@ pub async fn sell(
         &recent_blockhash,
     );
 
+    println!("Sending transaction...");
     let transaction = Transaction::new(&[secret_keypair], message, recent_blockhash);
-    println!("Sending sell transaction...");
 
-    let signature = rpc_client.send_transaction(&transaction).map_err(|e| {
-        println!("Failed to send transaction: {}", e);
-        AppError::SolanaRpcError(e)
-    })?;
+    println!("Transaction: {:?}", transaction);
+    println!("Slippage: {}", slippage);
+    println!("Token quantity: {}", token_amount);
+    println!("Min SOL output: {}", min_sol_output);
+    println!(
+        "Token account address: {}",
+        token_account_container.token_account_address.unwrap()
+    );
+    println!("User address: {}", user_address);
 
-    println!("Transaction sent successfully!");
-    println!("Signature: {}", signature);
-    println!("Beginning confirmation process...");
-    println!("Signature: {}", signature);
+    const CONFIG: RpcSendTransactionConfig = RpcSendTransactionConfig {
+        skip_preflight: false,
+        preflight_commitment: Some(CommitmentConfig::confirmed().commitment),
+        encoding: Some(UiTransactionEncoding::Base64),
+        max_retries: Some(20),
+        min_context_slot: None,
+    };
+
+    let signature = rpc_client
+        .send_transaction_with_config(&transaction, CONFIG)
+        .map_err(|e| AppError::RequestError(format!("Failed to send transaction: {}", e)))?;
+    println!("Transaction signature: {}", signature);
 
     // Confirm transaction with retries
     match confirm_transaction(rpc_client, &signature, 20, 3).await {
@@ -417,6 +469,14 @@ pub async fn sell(
             Err(e)
         }
     }
+}
+
+fn create_sell_instruction_data(token_amount: u64, min_sol_output: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(24);
+    data.extend_from_slice(&[51, 230, 133, 164, 1, 127, 131, 173]); // SELL discriminator
+    data.extend_from_slice(&token_amount.to_le_bytes());
+    data.extend_from_slice(&min_sol_output.to_le_bytes());
+    data
 }
 
 pub async fn process_buy_request(
@@ -566,20 +626,6 @@ pub async fn process_sell_request(
     })
 }
 
-pub const PUMP_FUN_ACCOUNTS_ORDER: [&str; 12] = [
-    "global",
-    "feeRecipient",
-    "mint",
-    "bondingCurve",
-    "associatedBondingCurve",
-    "tokenAccount",
-    "user",
-    "systemProgram",
-    "tokenProgram",
-    "rent",
-    "eventAuthority",
-    "programId",
-];
 fn build_pump_fun_accounts(
     user_address: &Pubkey,
     pump_fun_token_container: &PumpFunTokenContainer,

@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
     let supabase_key = env::var("SUPABASE_API_KEY").context("SUPABASE_API_KEY must be set")?;
     let rpc_url = env::var("SOLANA_RPC_HTTP_URL").context("SOLANA_RPC_HTTP_URL must be set")?;
+    println!("rpc_url: {}", rpc_url);
 
     let server_keypair = get_server_keypair();
     let user_id = server_keypair.pubkey().to_string();

@@ -8,6 +8,7 @@ use solana_program::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signature::Signature;
+use solana_transaction_status::UiTransactionEncoding;
 use spl_token::state::Mint;
 use std::sync::Arc;
 use std::time::Duration;
@@ -244,7 +245,7 @@ pub async fn confirm_transaction(
         match rpc_client.get_transaction_with_config(
             signature,
             RpcTransactionConfig {
-                encoding: None,
+                encoding: UiTransactionEncoding::Json.into(),
                 commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
                 max_supported_transaction_version: Some(0),
             },
