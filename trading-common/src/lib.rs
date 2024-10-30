@@ -2,7 +2,7 @@ pub mod constants;
 pub mod database;
 pub mod error;
 pub mod models;
-pub mod pumpdotfun; // New module
+pub mod pumpdotfun;
 pub mod utils;
 pub use constants::*;
 pub use database::SupabaseClient;

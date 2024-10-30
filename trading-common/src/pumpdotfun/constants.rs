@@ -1,9 +1,9 @@
 use solana_sdk::pubkey::Pubkey;
 
-pub const UNIT_PRICE: u64 = 1_000_000; // Match Python exactly
-pub const UNIT_BUDGET: u32 = 100_000; // Match Python exactly
+pub const UNIT_PRICE: u64 = 1_000_000;
+pub const UNIT_BUDGET: u32 = 100_000;
 pub const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
-pub const BONDING_CURVE_MARGIN_OF_ERROR: f64 = 0.01; // 1%
+pub const BONDING_CURVE_MARGIN_OF_ERROR: f64 = 0.01;
 pub const BUY: u8 = 0;
 pub const SELL: u8 = 1;
 

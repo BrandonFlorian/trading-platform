@@ -65,7 +65,7 @@ pub async fn buy(
     }
 
     // Calculate min/max outputs
-    let decimals = 9; // Default decimals for now
+    let decimals = 9;
 
     let max_token_output = (token_out as f64) / 10f64.powi(decimals);
     let min_token_output = max_token_output * (1.0 - slippage);

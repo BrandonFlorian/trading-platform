@@ -91,7 +91,7 @@ pub struct TrackedWalletNotification {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransactionLoggedNotification {
-    pub data: TransactionLog, // We need to define TransactionLog
+    pub data: TransactionLog,
     #[serde(rename = "type")]
     pub type_: String,
 }
