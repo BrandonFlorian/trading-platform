@@ -1,7 +1,8 @@
-use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
+
+use super::LAMPORTS_PER_SOL;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PumpFunCoinData {
@@ -55,4 +56,48 @@ pub enum PumpFunError {
     SurfError(#[from] Box<dyn std::error::Error + Send + Sync>),
     #[error("Anyhow error: {0}")]
     AnyhowError(#[from] anyhow::Error),
+}
+
+#[derive(Debug)]
+pub struct PumpFunCalcResult {
+    pub token_out: u64,
+    pub max_sol_cost: u64,
+    pub price_per_token: f64,
+    pub adjusted_max_token_output: f64,
+    pub adjusted_min_token_output: f64,
+}
+
+impl PumpFunCalcResult {
+    pub fn new(
+        virtual_token_reserves: i64,
+        virtual_sol_reserves: i64,
+        sol_quantity: f64,
+        slippage: f64,
+        decimals: u8,
+    ) -> Self {
+        let vtokenr = virtual_token_reserves as f64;
+        let vsolr = virtual_sol_reserves as f64;
+
+        // Calculate expected output
+        let sol_lamports = sol_quantity * LAMPORTS_PER_SOL as f64;
+        let token_out = ((sol_lamports * vtokenr) / vsolr) as u64;
+
+        // Calculate price per token in SOL (not lamports)
+        let price_per_token = vsolr / (vtokenr * LAMPORTS_PER_SOL as f64);
+
+        // Calculate max output with proper decimal handling
+        let max_token_output = (token_out as f64) / 10f64.powi(decimals as i32);
+        let min_token_output = max_token_output * (1.0 - slippage);
+
+        // Max SOL cost with slippage
+        let max_sol_cost = (sol_lamports * (1.0 + slippage)) as u64;
+
+        Self {
+            token_out,
+            max_sol_cost,
+            price_per_token,
+            adjusted_max_token_output: max_token_output,
+            adjusted_min_token_output: min_token_output,
+        }
+    }
 }
