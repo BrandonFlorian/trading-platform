@@ -15,3 +15,4 @@ pub const HELIO_FEE: &str = "5K5RtTWzzLp4P8Npi84ocf7F1vBsAu29N1irG4iiUnzt";
 pub const CONFIG_ACCOUNT: &str = "36Eru7v11oU5Pfrojyn5oY3nETA1a1iqsw2WUu6afkM9";
 pub const MOONSHOT_PROGRAM: &str = "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG";
 pub const METADATA_PROGRAM_ID: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
+pub const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";

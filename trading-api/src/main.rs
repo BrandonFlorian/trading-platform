@@ -1,14 +1,23 @@
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use axum::{
     routing::{delete, get, post, put},
     Router,
 };
 use dotenv::dotenv;
-use std::env;
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::signer::Signer;
 use std::net::SocketAddr;
+use std::{env, sync::Arc};
 use tokio::net::TcpListener;
-use trading_common::SupabaseClient;
+use trading_common::{utils::get_server_keypair, SupabaseClient};
 mod routes;
+
+#[derive(Clone)]
+struct AppState {
+    rpc_client: Arc<ArcSwap<RpcClient>>,
+    supabase_client: SupabaseClient,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,14 +27,26 @@ async fn main() -> Result<()> {
     let supabase_service_role_key =
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
     let supabase_key = env::var("SUPABASE_API_KEY").context("SUPABASE_API_KEY must be set")?;
-    let user_id = env::var("USER_ID").context("USER_ID must be set")?;
+    let rpc_url = env::var("SOLANA_RPC_HTTP_URL").context("SOLANA_RPC_HTTP_URL must be set")?;
+    println!("rpc_url: {}", rpc_url);
 
-    let client = SupabaseClient::new(
+    let server_keypair = get_server_keypair();
+    let user_id = server_keypair.pubkey().to_string();
+    println!("user_id: {}", user_id);
+
+    let supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
     );
+    let rpc_client = RpcClient::new(rpc_url);
+    let shared_rpc_client = Arc::new(ArcSwap::from_pointee(rpc_client));
+
+    let state = AppState {
+        rpc_client: shared_rpc_client,
+        supabase_client,
+    };
 
     let app = Router::new()
         .route("/tracked_wallets", get(routes::get_tracked_wallets))
@@ -60,9 +81,11 @@ async fn main() -> Result<()> {
             delete(routes::delete_copy_trade_settings),
         )
         .route("/transaction_history", get(routes::get_transaction_history))
-        .with_state(client);
+        .route("/pump_fun/buy", post(routes::pump_fun_buy))
+        .route("/pump_fun/sell", post(routes::pump_fun_sell))
+        .with_state(state);
 
-    let port = env::var("APP_PORT").unwrap_or_else(|_| "3001".to_string());
+    let port = env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = SocketAddr::from(([0, 0, 0, 0], port.parse()?));
 
     println!("Server running on {}", addr);

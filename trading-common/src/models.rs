@@ -107,6 +107,7 @@ pub struct WalletUpdateNotification {
 pub struct BuyRequest {
     pub token_address: String,
     pub sol_quantity: f64,
+    pub slippage_tolerance: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -124,6 +125,7 @@ pub struct BuyResponse {
 pub struct SellRequest {
     pub token_address: String,
     pub token_quantity: f64,
+    pub slippage_tolerance: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -134,4 +136,13 @@ pub struct SellResponse {
     pub sol_received: f64,
     pub solscan_tx_url: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BuyTokenCalculations {
+    pub token_out: u64,
+    pub max_sol_cost: u64,
+    pub price_per_token: f64,
+    pub max_token_output: f64,
+    pub min_token_output: f64,
 }

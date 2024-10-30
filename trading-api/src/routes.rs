@@ -1,3 +1,4 @@
+use crate::AppState;
 use axum::{
     extract::{Path, State},
     Json,
@@ -5,58 +6,69 @@ use axum::{
 use serde_json::json;
 use trading_common::{
     error::AppError,
-    models::{BuyRequest, SellRequest},
-    CopyTradeSettings, SupabaseClient, TrackedWallet, TransactionLog,
+    models::{BuyRequest, BuyResponse, SellRequest, SellResponse},
+    pumpdotfun::{buy::process_buy_request, sell::process_sell_request},
+    utils::get_server_keypair,
+    CopyTradeSettings, TrackedWallet, TransactionLog,
 };
 use uuid::Uuid;
 
 pub async fn get_tracked_wallets(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
 ) -> Result<Json<Vec<TrackedWallet>>, AppError> {
-    let wallets = client.get_tracked_wallets().await?;
+    let wallets = state.supabase_client.get_tracked_wallets().await?;
     Ok(Json(wallets))
 }
 
 pub async fn add_tracked_wallet(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
     Json(wallet): Json<TrackedWallet>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let result = client.add_tracked_wallet(wallet).await?;
+    let result = state.supabase_client.add_tracked_wallet(wallet).await?;
     Ok(Json(
         json!({ "success": true, "tracked_wallet_id": result }),
     ))
 }
 
 pub async fn archive_tracked_wallet(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let result = client.archive_tracked_wallet(&wallet_address).await?;
+    let result = state
+        .supabase_client
+        .archive_tracked_wallet(&wallet_address)
+        .await?;
     Ok(Json(json!({ "success": true, "message": result })))
 }
 
 pub async fn unarchive_tracked_wallet(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let result = client.unarchive_tracked_wallet(&wallet_address).await?;
+    let result = state
+        .supabase_client
+        .unarchive_tracked_wallet(&wallet_address)
+        .await?;
     Ok(Json(json!({ "success": true, "message": result })))
 }
 
 pub async fn delete_tracked_wallet(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let result = client.delete_tracked_wallet(&wallet_address).await?;
+    let result = state
+        .supabase_client
+        .delete_tracked_wallet(&wallet_address)
+        .await?;
     Ok(Json(json!({ "success": true, "message": result })))
 }
 
 pub async fn update_tracked_wallet(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
     Json(update): Json<TrackedWallet>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     println!("update_tracked_wallet() called");
-    let result = client.update_tracked_wallet(update).await?;
+    let result = state.supabase_client.update_tracked_wallet(update).await?;
     println!("update_tracked_wallet() result: {:?}", result);
     Ok(Json(
         json!({ "success": true, "tracked_wallet_id": result }),
@@ -64,51 +76,70 @@ pub async fn update_tracked_wallet(
 }
 
 pub async fn get_copy_trade_settings(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
 ) -> Result<Json<Vec<CopyTradeSettings>>, AppError> {
-    let settings = client.get_copy_trade_settings().await?;
+    let settings = state.supabase_client.get_copy_trade_settings().await?;
     Ok(Json(settings))
 }
 
 pub async fn create_copy_trade_settings(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
     Json(settings): Json<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let result = client.create_copy_trade_settings(settings).await?;
+    let result = state
+        .supabase_client
+        .create_copy_trade_settings(settings)
+        .await?;
     Ok(Json(json!({ "success": true, "settings_id": result })))
 }
 
 pub async fn update_copy_trade_settings(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
     Json(settings): Json<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let result = client.update_copy_trade_settings(settings).await?;
+    let result = state
+        .supabase_client
+        .update_copy_trade_settings(settings)
+        .await?;
     Ok(Json(json!({ "success": true, "settings_id": result })))
 }
 
 pub async fn delete_copy_trade_settings(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
     Path(tracked_wallet_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let result = client.delete_copy_trade_settings(tracked_wallet_id).await?;
+    let result = state
+        .supabase_client
+        .delete_copy_trade_settings(tracked_wallet_id)
+        .await?;
     Ok(Json(json!({ "success": true, "message": result })))
 }
 
 pub async fn get_transaction_history(
-    State(client): State<SupabaseClient>,
+    State(state): State<AppState>,
 ) -> Result<Json<Vec<TransactionLog>>, AppError> {
-    let transactions = client.get_transaction_history().await?;
+    let transactions = state.supabase_client.get_transaction_history().await?;
     Ok(Json(transactions))
 }
 
-pub async fn buy_pump_fun_token(
-    Json(buy_request): Json<BuyRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    unimplemented!()
+pub async fn pump_fun_buy(
+    State(state): State<AppState>,
+    Json(request): Json<BuyRequest>,
+) -> Result<Json<BuyResponse>, AppError> {
+    let rpc_client = state.rpc_client.load();
+    let server_keypair = get_server_keypair();
+    println!("request: {:?}", request);
+    let response = process_buy_request(&rpc_client, &server_keypair, request).await?;
+    Ok(Json(response))
 }
 
-pub async fn sell_pump_fun_token(
-    Json(sell_request): Json<SellRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    unimplemented!()
+pub async fn pump_fun_sell(
+    State(state): State<AppState>,
+    Json(request): Json<SellRequest>,
+) -> Result<Json<SellResponse>, AppError> {
+    let rpc_client = state.rpc_client.load();
+    let server_keypair = get_server_keypair();
+    println!("request: {:?}", request);
+    let response = process_sell_request(&rpc_client, &server_keypair, request).await?;
+    Ok(Json(response))
 }
