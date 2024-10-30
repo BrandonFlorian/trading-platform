@@ -265,44 +265,109 @@ pub async fn buy(
 ) -> Result<String, AppError> {
     let user_address = secret_keypair.pubkey();
 
-    // Calculate amounts (matching Python implementation)
-    let sol_in_lamports = (sol_quantity * LAMPORTS_PER_SOL as f64) as u64;
-
-    let virtual_token_reserves = pump_fun_token_container
-        .pump_fun_coin_data
-        .as_ref()
-        .unwrap()
-        .virtual_token_reserves as f64;
-    let virtual_sol_reserves = pump_fun_token_container
-        .pump_fun_coin_data
-        .as_ref()
-        .unwrap()
-        .virtual_sol_reserves as f64;
-
-    let amount = ((sol_in_lamports as f64 * virtual_token_reserves) / virtual_sol_reserves) as u64;
-    let max_sol_cost = (sol_in_lamports as f64 * (1.0 + slippage)) as u64;
+    // Validate slippage
+    if slippage >= 1.0 {
+        return Err(AppError::BadRequest(
+            "Slippage must be less than 100%".to_string(),
+        ));
+    }
 
     println!(
-        "Sol in (lamports): {}, Amount out: {}, Max cost: {}",
-        sol_in_lamports, amount, max_sol_cost
+        "Initiator {} >> Buy: Token: {} Slippage %: {}",
+        user_address,
+        token_account_container.mint_address,
+        slippage * 100.0
     );
 
+    // Get virtual reserves from bonding curve
+    let (virtual_token_reserves, virtual_sol_reserves) =
+        get_bonding_curve_info(rpc_client, pump_fun_token_container).await?;
+
+    let virtual_token_reserves = virtual_token_reserves as f64;
+    let virtual_sol_reserves = virtual_sol_reserves as f64;
+
+    // Calculate price per token in SOL
+    let price_per_token = virtual_sol_reserves / virtual_token_reserves;
+    println!("Price per token: {}", price_per_token);
+
+    // Calculate expected token output
+    let sol_in_lamports = sol_quantity * LAMPORTS_PER_SOL as f64;
+    let token_out = ((sol_in_lamports * virtual_token_reserves) / virtual_sol_reserves) as u64;
+
+    if token_out == 0 {
+        return Err(AppError::BadRequest(
+            "Calculated token output is zero".to_string(),
+        ));
+    }
+
+    // Calculate min/max outputs
+    let decimals = pump_fun_token_container
+        .pump_fun_coin_data
+        .as_ref()
+        .map(|data| 9) // Default to 9 decimals for now
+        .unwrap_or(9);
+
+    let max_token_output = (token_out as f64) / 10f64.powi(decimals);
+    let min_token_output = max_token_output * (1.0 - slippage);
+
+    println!(
+        "Token Output >> Min: {:.8}, Max: {:.8}",
+        min_token_output, max_token_output
+    );
+
+    // Calculate max SOL cost with slippage
+    let max_sol_cost = (sol_in_lamports * (1.0 + slippage)) as u64;
+
+    println!(
+        "Sol in (lamports): {}, Token out: {}, Max cost: {}",
+        sol_in_lamports, token_out, max_sol_cost
+    );
+
+    // Construct instruction data
     let mut data = Vec::with_capacity(24);
-    data.extend_from_slice(&[102, 6, 61, 18, 1, 218, 235, 234]); // "66063d1201daebea"
-    data.extend_from_slice(&amount.to_le_bytes());
+    data.extend_from_slice(&[102, 6, 61, 18, 1, 218, 235, 234]); // BUY discriminator
+    data.extend_from_slice(&token_out.to_le_bytes());
     data.extend_from_slice(&max_sol_cost.to_le_bytes());
 
-    let accounts = build_pump_fun_accounts(
-        &user_address,
-        pump_fun_token_container,
-        &token_account_container.token_account_address.unwrap(),
-    );
+    // Build account list
+    let bonding_curve_pubkey = Pubkey::from_str(
+        &pump_fun_token_container
+            .pump_fun_coin_data
+            .as_ref()
+            .unwrap()
+            .bonding_curve,
+    )?;
+    let associated_bonding_curve_pubkey = Pubkey::from_str(
+        &pump_fun_token_container
+            .pump_fun_coin_data
+            .as_ref()
+            .unwrap()
+            .associated_bonding_curve,
+    )?;
+
+    let accounts = vec![
+        AccountMeta::new_readonly(GLOBAL, false),
+        AccountMeta::new(FEE_RECIPIENT, false),
+        AccountMeta::new_readonly(pump_fun_token_container.mint_address, false),
+        AccountMeta::new(bonding_curve_pubkey, false),
+        AccountMeta::new(associated_bonding_curve_pubkey, false),
+        AccountMeta::new(
+            token_account_container.token_account_address.unwrap(),
+            false,
+        ),
+        AccountMeta::new(user_address, true),
+        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),
+        AccountMeta::new_readonly(TOKEN_KEG_PROGRAM_ID, false),
+        AccountMeta::new_readonly(solana_program::sysvar::rent::ID, false), // Added RENT
+        AccountMeta::new_readonly(EVENT_AUTHORITY, false),
+        AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false),
+    ];
 
     let instruction = Instruction::new_with_bytes(PUMP_FUN_PROGRAM_ID, &data, accounts);
 
     // Add compute budget instructions
-    let compute_unit_price_ix = ComputeBudgetInstruction::set_compute_unit_price(1_000);
-    let compute_unit_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(100_000);
+    let compute_unit_price_ix = ComputeBudgetInstruction::set_compute_unit_price(UNIT_PRICE);
+    let compute_unit_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(UNIT_BUDGET);
 
     let recent_blockhash = rpc_client.get_latest_blockhash()?;
 
@@ -314,10 +379,35 @@ pub async fn buy(
 
     let transaction = Transaction::new(&[secret_keypair], message, recent_blockhash);
 
-    let signature = rpc_client.send_and_confirm_transaction(&transaction)?;
-    println!("Signature: {}", signature);
+    // Send with preflight checks
+    const CONFIG: RpcSendTransactionConfig = RpcSendTransactionConfig {
+        skip_preflight: false,
+        preflight_commitment: Some(CommitmentConfig::confirmed().commitment),
+        encoding: Some(UiTransactionEncoding::Base64),
+        max_retries: Some(20),
+        min_context_slot: None,
+    };
 
-    Ok(signature.to_string())
+    let signature = rpc_client
+        .send_transaction_with_config(&transaction, CONFIG)
+        .map_err(|e| AppError::RequestError(format!("Failed to send transaction: {}", e)))?;
+
+    println!("Transaction signature: {}", signature);
+
+    // Confirm transaction with retries
+    match confirm_transaction(rpc_client, &signature, 20, 3).await {
+        Ok(true) => {
+            println!("Buy transaction confirmed successfully!");
+            Ok(signature.to_string())
+        }
+        Ok(false) => Err(AppError::ServerError(
+            "Transaction failed during confirmation".to_string(),
+        )),
+        Err(e) => {
+            println!("Error during confirmation: {:?}", e);
+            Err(e)
+        }
+    }
 }
 
 pub async fn sell(
@@ -377,7 +467,7 @@ pub async fn sell(
 
     let data = create_sell_instruction_data(token_amount as u64, min_sol_output);
 
-    // Build accounts exactly matching Python implementation
+    // Build accounts
     let accounts = vec![
         AccountMeta::new_readonly(GLOBAL, false),
         AccountMeta::new(FEE_RECIPIENT, false),
@@ -624,45 +714,6 @@ pub async fn process_sell_request(
         solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
         error: None,
     })
-}
-
-fn build_pump_fun_accounts(
-    user_address: &Pubkey,
-    pump_fun_token_container: &PumpFunTokenContainer,
-    token_account_address: &Pubkey,
-) -> Vec<AccountMeta> {
-    let bonding_curve_pubkey = Pubkey::from_str(
-        &pump_fun_token_container
-            .pump_fun_coin_data
-            .as_ref()
-            .unwrap()
-            .bonding_curve,
-    )
-    .expect("Failed to parse bonding curve pubkey");
-    let associated_bonding_curve_pubkey = Pubkey::from_str(
-        &pump_fun_token_container
-            .pump_fun_coin_data
-            .as_ref()
-            .unwrap()
-            .associated_bonding_curve,
-    )
-    .expect("Failed to parse associated bonding curve pubkey");
-
-    // Note: Token program order changes for sell
-    vec![
-        AccountMeta::new_readonly(GLOBAL, false),
-        AccountMeta::new(FEE_RECIPIENT, false),
-        AccountMeta::new_readonly(pump_fun_token_container.mint_address, false),
-        AccountMeta::new(bonding_curve_pubkey, false),
-        AccountMeta::new(associated_bonding_curve_pubkey, false),
-        AccountMeta::new(*token_account_address, false),
-        AccountMeta::new(*user_address, true),
-        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),
-        AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM_ID, false), // Changed for sell
-        AccountMeta::new_readonly(TOKEN_KEG_PROGRAM_ID, false),
-        AccountMeta::new_readonly(EVENT_AUTHORITY, false),
-        AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false),
-    ]
 }
 
 const BUY_DISCRIMINATOR: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234]; // "66063d1201daebea"
