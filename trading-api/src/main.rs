@@ -83,6 +83,8 @@ async fn main() -> Result<()> {
         .route("/transaction_history", get(routes::get_transaction_history))
         .route("/pump_fun/buy", post(routes::pump_fun_buy))
         .route("/pump_fun/sell", post(routes::pump_fun_sell))
+        .route("/raydium/buy", post(routes::raydium_buy))
+        .route("/raydium/sell", post(routes::raydium_sell))
         .with_state(state);
 
     let port = env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());

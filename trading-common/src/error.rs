@@ -40,6 +40,9 @@ pub enum AppError {
 
     #[error("Pubkey parse error: {0}")]
     PubkeyParseError(#[from] ParsePubkeyError),
+
+    #[error("{0}")]
+    Generic(String),
 }
 
 impl IntoResponse for AppError {
@@ -56,6 +59,7 @@ impl IntoResponse for AppError {
             AppError::SurfError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::SolanaRpcError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::PubkeyParseError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::Generic(err) => (StatusCode::INTERNAL_SERVER_ERROR, err),
         };
 
         (status, error_message).into_response()
@@ -77,5 +81,11 @@ impl From<AnyhowError> for AppError {
 impl From<surf::Error> for AppError {
     fn from(err: surf::Error) -> Self {
         AppError::SurfError(err.to_string())
+    }
+}
+
+impl From<solana_sdk::program_error::ProgramError> for AppError {
+    fn from(error: solana_sdk::program_error::ProgramError) -> Self {
+        AppError::Generic(error.to_string())
     }
 }
