@@ -78,24 +78,17 @@ impl PumpFunCalcResult {
         let vtokenr = virtual_token_reserves as f64;
         let vsolr = virtual_sol_reserves as f64;
 
-        // Calculate expected output
-        let sol_lamports = sol_quantity * LAMPORTS_PER_SOL as f64;
-        let token_out = ((sol_lamports * vtokenr) / vsolr) as u64;
+        let sol_in_lamports = sol_quantity * LAMPORTS_PER_SOL as f64;
+        let token_out = ((sol_in_lamports * vtokenr) / vsolr) as u64;
 
-        // Calculate price per token in SOL (not lamports)
-        let price_per_token = vsolr / (vtokenr * LAMPORTS_PER_SOL as f64);
-
-        // Calculate max output with proper decimal handling
-        let max_token_output = (token_out as f64) / 10f64.powi(decimals as i32);
+        // Convert token_out to human readable (divide by 10^6)
+        let max_token_output = token_out as f64 / 1_000_000.0; // Adjust for 6 decimals
         let min_token_output = max_token_output * (1.0 - slippage);
-
-        // Max SOL cost with slippage
-        let max_sol_cost = (sol_lamports * (1.0 + slippage)) as u64;
 
         Self {
             token_out,
-            max_sol_cost,
-            price_per_token,
+            max_sol_cost: (sol_in_lamports * (1.0 + slippage)) as u64,
+            price_per_token: vsolr / (vtokenr * LAMPORTS_PER_SOL as f64),
             adjusted_max_token_output: max_token_output,
             adjusted_min_token_output: min_token_output,
         }

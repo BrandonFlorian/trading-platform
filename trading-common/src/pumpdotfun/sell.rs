@@ -252,8 +252,11 @@ pub async fn process_sell_request(
         .as_ref()
         .unwrap()
         .virtual_sol_reserves as f64;
-    let price_per_token = virtual_sol_reserves / (virtual_token_reserves * LAMPORTS_PER_SOL as f64);
-    let sol_received = request.token_quantity * price_per_token;
+
+    // Calculate SOL received - raw math matches the pool formula
+    let token_amount_raw = request.token_quantity * 1_000_000.0; // Convert to raw units (6 decimals)
+    let sol_received = (token_amount_raw * virtual_sol_reserves)
+        / (virtual_token_reserves * LAMPORTS_PER_SOL as f64);
 
     Ok(SellResponse {
         success: true,
