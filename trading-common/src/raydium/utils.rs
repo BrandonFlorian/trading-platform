@@ -1,250 +1,137 @@
+use anyhow::Result;
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::{
+    instruction::{AccountMeta, Instruction},
+    message::Message,
+    pubkey::Pubkey,
+    signature::Keypair,
+    signer::Signer,
+    transaction::Transaction,
+};
 use std::str::FromStr;
 
-use borsh::{BorshDeserialize, BorshSerialize};
-use solana_client::rpc_client::RpcClient;
-use solana_sdk::program_pack::Pack;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signer::Signer;
-use solana_sdk::{account::Account, instruction::Instruction};
-use spl_associated_token_account::{
-    get_associated_token_address, instruction::create_associated_token_account,
+use crate::error::AppError;
+
+use super::{
+    layouts::{
+        PoolKeys, RaydiumApiResponse, RaydiumPoolInfo, RaydiumPoolKeyInfo, RaydiumPoolKeyResponse,
+    },
+    COMPUTE_BUDGET_PRICE, COMPUTE_BUDGET_UNITS, OPEN_BOOK_PROGRAM, RAY_AUTHORITY_V4, RAY_V4,
+    RAY_V4_PROGRAM_ID, TOKEN_PROGRAM_ID, WSOL,
 };
 
-use crate::{error::AppError, raydium::RAYDIUM_V4_PROGRAM_ID};
+// Core functionality
+pub async fn get_pool_info(token_mint: &str) -> Result<RaydiumPoolInfo, AppError> {
+    let url = format!(
+        "https://api-v3.raydium.io/pools/info/mint?\
+         mint1={}&\
+         poolType=standard&\
+         poolSortField=liquidity&\
+         sortType=desc&\
+         pageSize=1&\
+         page=1",
+        token_mint
+    );
 
-use super::{layouts::*, RaydiumPoolKeys, OPENBOOK_PROGRAM_ID, RAYDIUM_V4_AUTHORITY, WSOL};
+    let mut response = surf::get(&url)
+        .header("User-Agent", "Mozilla/5.0")
+        .await
+        .map_err(|e| AppError::RequestError(e.to_string()))?;
 
-pub async fn get_pool_reserves(
-    rpc_client: &RpcClient,
-    pool_keys: &RaydiumPoolKeys,
-) -> Result<(i64, i64), AppError> {
-    // Get AMM data and parse
-    let amm_data = rpc_client.get_account_data(&pool_keys.amm_id)?;
-    let liquidity_state = LiquidityStateV4::try_from_slice(&amm_data)
-        .map_err(|e| AppError::ServerError(format!("Failed to parse liquidity state: {}", e)))?;
+    let response_text = response
+        .body_string()
+        .await
+        .map_err(|e| AppError::RequestError(e.to_string()))?;
 
-    // Get open orders data
-    let open_orders_data = rpc_client.get_account_data(&pool_keys.open_orders)?;
-    let open_orders = OpenOrders::try_from_slice(&open_orders_data)
-        .map_err(|e| AppError::ServerError(format!("Failed to parse open orders: {}", e)))?;
+    let api_response: RaydiumApiResponse = serde_json::from_str(&response_text).map_err(|e| {
+        AppError::JsonParseError(format!(
+            "Failed to parse pool info: {}. Response: {}",
+            e, response_text
+        ))
+    })?;
 
-    // Get base token balance
-    let base_balance = rpc_client
-        .get_token_account_balance(&pool_keys.base_vault)?
-        .ui_amount
-        .unwrap_or(0.0);
-
-    // Get quote token balance
-    let quote_balance = rpc_client
-        .get_token_account_balance(&pool_keys.quote_vault)?
-        .ui_amount
-        .unwrap_or(0.0);
-
-    // Calculate base decimal factor
-    let base_decimal_factor = 10_u64.pow(pool_keys.base_decimals as u32);
-    let quote_decimal_factor = 10_u64.pow(pool_keys.quote_decimals as u32);
-
-    // Calculate PnL adjustments
-    let base_pnl = liquidity_state.need_take_pnl_coin as f64 / base_decimal_factor as f64;
-    let quote_pnl = liquidity_state.need_take_pnl_pc as f64 / quote_decimal_factor as f64;
-
-    // Calculate open orders adjustments
-    let open_orders_base = open_orders.base_token_total as f64 / base_decimal_factor as f64;
-    let open_orders_quote = open_orders.quote_token_total as f64 / quote_decimal_factor as f64;
-
-    // Calculate total token amounts
-    let base_total = (base_balance + open_orders_base - base_pnl) * base_decimal_factor as f64;
-    let quote_total = (quote_balance + open_orders_quote - quote_pnl) * quote_decimal_factor as f64;
-
-    Ok((base_total as i64, quote_total as i64))
-}
-
-pub async fn get_token_price(rpc_client: &RpcClient, pair_address: &str) -> Result<f64, AppError> {
-    let pool_keys = fetch_pool_keys(rpc_client, pair_address).await?;
-    let (base_reserves, quote_reserves) = get_pool_reserves(rpc_client, &pool_keys).await?;
-
-    // Price depends on whether base token is WSOL or not
-    let price = if pool_keys.base_mint == WSOL {
-        base_reserves as f64 / quote_reserves as f64
-    } else {
-        quote_reserves as f64 / base_reserves as f64
-    };
-
-    Ok(price)
-}
-
-pub async fn get_pair_address_from_rpc(
-    rpc_client: &RpcClient,
-    token_address: &str,
-) -> Result<String, AppError> {
-    const BASE_OFFSET: usize = 400;
-    const QUOTE_OFFSET: usize = 432;
-    const DATA_LENGTH: u64 = 752;
-    const WSOL_ADDRESS: &str = "So11111111111111111111111111111111111111112";
-
-    // Helper function to fetch AMM ID
-    async fn fetch_amm_id(
-        rpc_client: &RpcClient,
-        base_mint: &str,
-        quote_mint: &str,
-    ) -> Result<Option<String>, AppError> {
-        let config = solana_client::rpc_config::RpcProgramAccountsConfig {
-            filters: Some(vec![
-                solana_client::rpc_filter::RpcFilterType::DataSize(DATA_LENGTH),
-                solana_client::rpc_filter::RpcFilterType::Memcmp(
-                    solana_client::rpc_filter::Memcmp::new_raw_bytes(
-                        BASE_OFFSET,
-                        bs58::decode(base_mint).into_vec().unwrap(),
-                    ),
-                ),
-                solana_client::rpc_filter::RpcFilterType::Memcmp(
-                    solana_client::rpc_filter::Memcmp::new_raw_bytes(
-                        QUOTE_OFFSET,
-                        bs58::decode(quote_mint).into_vec().unwrap(),
-                    ),
-                ),
-            ]),
-            with_context: Some(true),
-            account_config: solana_client::rpc_config::RpcAccountInfoConfig {
-                encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-                data_slice: None,
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
-                min_context_slot: None,
-            },
-            sort_results: Some(true),
-        };
-
-        let accounts =
-            rpc_client.get_program_accounts_with_config(&RAYDIUM_V4_PROGRAM_ID, config)?;
-
-        Ok(accounts.first().map(|(pubkey, _)| pubkey.to_string()))
+    if !api_response.success || api_response.data.data.is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "No pool found for token {}",
+            token_mint
+        )));
     }
 
-    // First attempt: token as base, WSOL as quote
-    if let Some(pair_address) = fetch_amm_id(rpc_client, token_address, WSOL_ADDRESS).await? {
-        return Ok(pair_address);
+    Ok(api_response.data.data[0].clone())
+}
+
+pub async fn get_pool_keys(pool_id: &str) -> Result<RaydiumPoolKeyInfo, AppError> {
+    let url = format!("https://api-v3.raydium.io/pools/key/ids?ids={}", pool_id);
+
+    let mut response = surf::get(&url)
+        .header("User-Agent", "Mozilla/5.0")
+        .await
+        .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+    let response_text = response
+        .body_string()
+        .await
+        .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+    let api_response: RaydiumPoolKeyResponse =
+        serde_json::from_str(&response_text).map_err(|e| {
+            AppError::JsonParseError(format!(
+                "Failed to parse pool keys: {}. Response: {}",
+                e, response_text
+            ))
+        })?;
+
+    if !api_response.success || api_response.data.is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "No pool keys found for pool {}",
+            pool_id
+        )));
     }
 
-    // Second attempt: WSOL as base, token as quote
-    if let Some(pair_address) = fetch_amm_id(rpc_client, WSOL_ADDRESS, token_address).await? {
-        return Ok(pair_address);
-    }
+    // Add validation for required fields
+    let pool_info = &api_response.data[0];
 
-    Err(AppError::BadRequest(
-        "No Raydium pool found for token".to_string(),
-    ))
+    // Validate all addresses can be parsed as Pubkeys
+    let _ = Pubkey::from_str(&pool_info.id)?;
+    let _ = Pubkey::from_str(&pool_info.mint_a.address)?;
+    let _ = Pubkey::from_str(&pool_info.mint_b.address)?;
+    let _ = Pubkey::from_str(&pool_info.market_id)?;
+    let _ = Pubkey::from_str(&pool_info.market_authority)?;
+    let _ = Pubkey::from_str(&pool_info.open_orders)?;
+    let _ = Pubkey::from_str(&pool_info.target_orders)?;
+    let _ = Pubkey::from_str(&pool_info.vault.A)?;
+    let _ = Pubkey::from_str(&pool_info.vault.B)?;
+
+    println!("Pool keys validated for pool {}", pool_id);
+    println!("Market ID: {}", pool_info.market_id);
+    println!("Market Authority: {}", pool_info.market_authority);
+    println!("OpenOrders: {}", pool_info.open_orders);
+    println!("Base Vault: {}", pool_info.vault.A);
+    println!("Quote Vault: {}", pool_info.vault.B);
+
+    Ok(api_response.data[0].clone())
 }
 
-// Add helper function to deserialize account data
-pub fn decode_pool_account_data(
-    rpc_client: &RpcClient,
-    data: &[u8],
-) -> Result<(LiquidityStateV4, MarketStateV3, OpenOrders), AppError> {
-    let liquidity_state = LiquidityStateV4::try_from_slice(data)
-        .map_err(|e| AppError::ServerError(format!("Failed to decode liquidity state: {}", e)))?;
-
-    let market_data = rpc_client.get_account_data(&liquidity_state.serum_market)?;
-    let market_state = MarketStateV3::try_from_slice(&market_data)
-        .map_err(|e| AppError::ServerError(format!("Failed to decode market state: {}", e)))?;
-
-    let open_orders_data = rpc_client.get_account_data(&liquidity_state.amm_open_orders)?;
-    let open_orders = OpenOrders::try_from_slice(&open_orders_data)
-        .map_err(|e| AppError::ServerError(format!("Failed to decode open orders: {}", e)))?;
-
-    Ok((liquidity_state, market_state, open_orders))
-}
-
-// Update fetch_pool_keys to use the new decoding functions
-pub async fn fetch_pool_keys(
-    rpc_client: &RpcClient,
-    pair_address: &str,
-) -> Result<RaydiumPoolKeys, AppError> {
-    let amm_id = Pubkey::from_str(pair_address)
-        .map_err(|_| AppError::BadRequest("Invalid pair address".to_string()))?;
-
-    let amm_data = rpc_client.get_account_data(&amm_id)?;
-    let (liquidity_state, market_state, _) = decode_pool_account_data(&rpc_client, &amm_data)?;
-
-    // Create program address for market authority
-    let seeds = &[
-        market_state.own_address.as_ref(),
-        &[market_state.vault_signer_nonce.try_into().unwrap()],
-    ];
-    let (market_authority, _) = Pubkey::find_program_address(seeds, &OPENBOOK_PROGRAM_ID);
-
-    Ok(RaydiumPoolKeys {
-        amm_id,
-        base_mint: market_state.base_mint,
-        quote_mint: market_state.quote_mint,
-        lp_mint: liquidity_state.lp_mint_address,
-        base_decimals: liquidity_state.coin_decimals,
-        quote_decimals: liquidity_state.pc_decimals,
-        lp_decimals: liquidity_state.coin_decimals,
-        authority: RAYDIUM_V4_AUTHORITY,
-        open_orders: liquidity_state.amm_open_orders,
-        target_orders: liquidity_state.amm_target_orders,
-        base_vault: liquidity_state.pool_coin_token_account,
-        quote_vault: liquidity_state.pool_pc_token_account,
-        market_id: liquidity_state.serum_market,
-        market_base_vault: market_state.base_vault,
-        market_quote_vault: market_state.quote_vault,
-        market_authority,
-        bids: market_state.bids,
-        asks: market_state.asks,
-        event_queue: market_state.event_queue,
-    })
-}
-
-pub async fn get_token_account(
-    rpc_client: &RpcClient,
-    owner: &Pubkey,
-    mint: &Pubkey,
-) -> Result<(Pubkey, Option<Instruction>), AppError> {
-    // First try to get existing ATA
-    let ata = get_associated_token_address(owner, mint);
-
-    match rpc_client.get_account(&ata) {
-        Ok(_) => Ok((ata, None)),
-        Err(_) => {
-            // Account doesn't exist, create instruction to make it
-            let create_ata_ix = create_associated_token_account(
-                owner, // Payer
-                owner, // Owner
-                mint,
-                &spl_token::id(),
-            );
-            Ok((ata, Some(create_ata_ix)))
-        }
-    }
-}
-
-pub async fn get_token_balance(
-    rpc_client: &RpcClient,
-    token_account: &Pubkey,
-) -> Result<f64, AppError> {
-    let account = rpc_client.get_account(token_account)?;
-    let token_account = spl_token::state::Account::unpack(&account.data)?;
-    Ok(token_account.amount as f64)
-}
-
-pub fn make_swap_instruction(
+pub fn create_swap_instruction(
+    pool_keys: &PoolKeys,
     amount_in: u64,
+    minimum_out: u64,
     token_account_in: Pubkey,
     token_account_out: Pubkey,
-    pool_keys: &RaydiumPoolKeys,
-    owner: &impl Signer,
+    owner: &Keypair,
 ) -> Result<Instruction, AppError> {
-    use solana_sdk::instruction::AccountMeta;
-
     let accounts = vec![
-        AccountMeta::new_readonly(spl_token::id(), false),
-        AccountMeta::new(pool_keys.amm_id, false),
-        AccountMeta::new_readonly(pool_keys.authority, false),
+        // Token Program
+        AccountMeta::new_readonly(Pubkey::from_str(TOKEN_PROGRAM_ID)?, false),
+        // AMM accounts
+        AccountMeta::new(pool_keys.id, false),
+        AccountMeta::new_readonly(RAY_AUTHORITY_V4, false),
         AccountMeta::new(pool_keys.open_orders, false),
         AccountMeta::new(pool_keys.target_orders, false),
         AccountMeta::new(pool_keys.base_vault, false),
         AccountMeta::new(pool_keys.quote_vault, false),
-        AccountMeta::new_readonly(OPENBOOK_PROGRAM_ID, false),
+        // Serum/OpenBook accounts
+        AccountMeta::new_readonly(OPEN_BOOK_PROGRAM, false),
         AccountMeta::new(pool_keys.market_id, false),
         AccountMeta::new(pool_keys.bids, false),
         AccountMeta::new(pool_keys.asks, false),
@@ -252,35 +139,129 @@ pub fn make_swap_instruction(
         AccountMeta::new(pool_keys.market_base_vault, false),
         AccountMeta::new(pool_keys.market_quote_vault, false),
         AccountMeta::new_readonly(pool_keys.market_authority, false),
+        // User accounts
         AccountMeta::new(token_account_in, false),
         AccountMeta::new(token_account_out, false),
         AccountMeta::new_readonly(owner.pubkey(), true),
     ];
 
-    let data = SwapInstruction {
-        instruction: 9, // Swap instruction discriminator
+    // Create instruction data
+    let mut data = Vec::with_capacity(17);
+    data.push(9u8); // Swap instruction discriminator
+    data.extend_from_slice(&amount_in.to_le_bytes());
+    data.extend_from_slice(&minimum_out.to_le_bytes());
+
+    Ok(Instruction::new_with_bytes(RAY_V4, &data, accounts))
+}
+
+// Utility functions for WSOL handling
+pub async fn create_wsol_account_instructions(
+    rpc_client: &RpcClient,
+    owner: &Keypair,
+    amount: u64,
+) -> Result<(Keypair, Vec<Instruction>)> {
+    let wsol_account = Keypair::new();
+    let rent = rpc_client.get_minimum_balance_for_rent_exemption(165)?;
+    let total_amount = rent + amount;
+
+    let create_account_ix = solana_sdk::system_instruction::create_account(
+        &owner.pubkey(),
+        &wsol_account.pubkey(),
+        total_amount,
+        165,
+        &Pubkey::from_str(TOKEN_PROGRAM_ID)?,
+    );
+
+    let init_account_ix = spl_token::instruction::initialize_account(
+        &Pubkey::from_str(TOKEN_PROGRAM_ID)?,
+        &wsol_account.pubkey(),
+        &Pubkey::from_str(WSOL)?,
+        &owner.pubkey(),
+    )?;
+
+    Ok((wsol_account, vec![create_account_ix, init_account_ix]))
+}
+
+// Helper function for price calculation
+pub async fn calculate_price_impact(
+    rpc_client: &RpcClient,
+    pool_keys: &PoolKeys,
+    amount_in: u64,
+    is_base_to_quote: bool,
+) -> Result<f64> {
+    let base_balance = rpc_client.get_token_account_balance(&pool_keys.base_vault)?;
+    let quote_balance = rpc_client.get_token_account_balance(&pool_keys.quote_vault)?;
+
+    let base_amount = base_balance.ui_amount.unwrap_or(0.0);
+    let quote_amount = quote_balance.ui_amount.unwrap_or(0.0);
+
+    let current_price = quote_amount / base_amount;
+    let k = base_amount * quote_amount;
+
+    let new_base_amount = if is_base_to_quote {
+        base_amount + (amount_in as f64 / 10f64.powi(base_balance.decimals as i32))
+    } else {
+        base_amount
+    };
+
+    let new_quote_amount = k / new_base_amount;
+    let new_price = new_quote_amount / new_base_amount;
+
+    Ok(((new_price - current_price) / current_price).abs())
+}
+
+// Main swap function that builds and sends the transaction
+pub async fn execute_swap(
+    rpc_client: &RpcClient,
+    owner: &Keypair,
+    pool_keys: &PoolKeys,
+    amount_in: u64,
+    minimum_out: u64,
+    source_token: Pubkey,
+    destination_token: Pubkey,
+) -> Result<String> {
+    // Set compute budget
+    let compute_budget_ix =
+        solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
+            COMPUTE_BUDGET_UNITS,
+        );
+    let priority_fee_ix =
+        solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(
+            COMPUTE_BUDGET_PRICE,
+        );
+
+    // Create swap instruction
+    let swap_ix = create_swap_instruction(
+        pool_keys,
         amount_in,
-        min_amount_out: 0, // No slippage protection for now
-    }
-    .try_to_vec()?;
+        minimum_out,
+        source_token,
+        destination_token,
+        owner,
+    )?;
 
-    Ok(Instruction::new_with_bytes(
-        RAYDIUM_V4_PROGRAM_ID,
-        &data,
-        accounts,
-    ))
+    // Build transaction
+    let recent_blockhash = rpc_client.get_latest_blockhash()?;
+    let message = Message::new(
+        &[compute_budget_ix, priority_fee_ix, swap_ix],
+        Some(&owner.pubkey()),
+    );
+    let mut transaction = Transaction::new_unsigned(message);
+    transaction.sign(&[owner], recent_blockhash);
+
+    // Send and confirm transaction
+    let signature = rpc_client.send_and_confirm_transaction_with_spinner(&transaction)?;
+
+    Ok(signature.to_string())
 }
 
-// Add new instruction data structure
-#[derive(BorshSerialize, BorshDeserialize)]
-pub struct SwapInstruction {
-    pub instruction: u8,
-    pub amount_in: u64,
-    pub min_amount_out: u64,
-}
+pub async fn get_token_balance(
+    rpc_client: &RpcClient,
+    token_account: Pubkey,
+) -> Result<f64, AppError> {
+    let account_balance = rpc_client
+        .get_token_account_balance(&token_account)
+        .map_err(|_| AppError::BadRequest("Failed to get token balance".to_string()))?;
 
-impl SwapInstruction {
-    pub fn try_to_vec(&self) -> Result<Vec<u8>, AppError> {
-        borsh::to_vec(self).map_err(|e| AppError::ServerError(e.to_string()))
-    }
+    Ok(account_balance.ui_amount.unwrap_or(0.0))
 }

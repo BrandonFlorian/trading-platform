@@ -10,6 +10,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signature::Signature;
 use solana_transaction_status::UiTransactionEncoding;
 use spl_token::state::Mint;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use surf::{Client, Url};
@@ -302,9 +303,19 @@ pub async fn get_token_balance(
 ) -> Result<f64, AppError> {
     let account = rpc_client
         .get_token_account_balance(token_account)
-        .map_err(|e| AppError::SolanaRpcError(e))?;
+        .map_err(AppError::SolanaRpcError)?;
 
-    Ok(account
+    account
         .ui_amount
-        .ok_or_else(|| AppError::BadRequest("Failed to get token balance".to_string()))?)
+        .ok_or_else(|| AppError::BadRequest("Failed to get token balance".to_string()))
+}
+
+pub fn validate_token_address(address: &str) -> Result<(), AppError> {
+    match Pubkey::from_str(address) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(AppError::BadRequest(format!(
+            "Invalid token address: {}",
+            address
+        ))),
+    }
 }

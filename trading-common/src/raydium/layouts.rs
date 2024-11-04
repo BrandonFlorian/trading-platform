@@ -1,122 +1,239 @@
-use borsh::{BorshDeserialize, BorshSerialize};
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 
-#[derive(BorshDeserialize, BorshSerialize, Debug)]
-pub struct LiquidityStateV4 {
-    pub status: u64,
-    pub nonce: u64,
-    pub order_num: u64,
-    pub depth: u64,
-    pub coin_decimals: u64,
-    pub pc_decimals: u64,
-    pub state: u64,
-    pub reset_flag: u64,
-    pub min_size: u64,
-    pub vol_max_cut_ratio: u64,
-    pub amount_wave_ratio: u64,
-    pub coin_lot_size: u64,
-    pub pc_lot_size: u64,
-    pub min_price_multiplier: u64,
-    pub max_price_multiplier: u64,
-    pub system_decimals_value: u64,
-    pub min_separate_numerator: u64,
-    pub min_separate_denominator: u64,
-    pub trade_fee_numerator: u64,
-    pub trade_fee_denominator: u64,
-    pub pnl_numerator: u64,
-    pub pnl_denominator: u64,
-    pub swap_fee_numerator: u64,
-    pub swap_fee_denominator: u64,
-    pub need_take_pnl_coin: u64,
-    pub need_take_pnl_pc: u64,
-    pub total_pnl_pc: u64,
-    pub total_pnl_coin: u64,
-    pub pool_open_time: u64,
-    pub punish_pc_amount: u64,
-    pub punish_coin_amount: u64,
-    pub orderbook_to_init_time: u64,
-    pub swap_coin_in_amount: u128,
-    pub swap_pc_out_amount: u128,
-    pub swap_coin2_pc_fee: u64,
-    pub swap_pc_in_amount: u128,
-    pub swap_coin_out_amount: u128,
-    pub swap_pc2_coin_fee: u64,
-    pub pool_coin_token_account: Pubkey,
-    pub pool_pc_token_account: Pubkey,
-    pub coin_mint_address: Pubkey,
-    pub pc_mint_address: Pubkey,
-    pub lp_mint_address: Pubkey,
-    pub amm_open_orders: Pubkey,
-    pub serum_market: Pubkey,
-    pub serum_program_id: Pubkey,
-    pub amm_target_orders: Pubkey,
-    pub pool_withdraw_queue: Pubkey,
-    pub pool_temp_lp_token_account: Pubkey,
-    pub amm_owner: Pubkey,
-    pub pnl_owner: Pubkey,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RaydiumApiResponse {
+    pub id: String,
+    pub success: bool,
+    pub data: RaydiumApiData,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RaydiumApiData {
+    pub count: i32,
+    pub data: Vec<RaydiumPoolInfo>,
+    #[serde(rename = "hasNextPage")]
+    pub has_next_page: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RaydiumPoolInfo {
+    #[serde(rename = "type")]
+    pub pool_type: String,
+    #[serde(rename = "programId")]
+    pub program_id: String,
+    pub id: String,
+    #[serde(rename = "mintA")]
+    pub mint_a: TokenInfo,
+    #[serde(rename = "mintB")]
+    pub mint_b: TokenInfo,
+    pub price: f64,
+    #[serde(rename = "mintAmountA")]
+    pub mint_amount_a: f64,
+    #[serde(rename = "mintAmountB")]
+    pub mint_amount_b: f64,
+    #[serde(rename = "feeRate")]
+    pub fee_rate: f64,
+    #[serde(rename = "openTime")]
+    pub open_time: String,
+    pub tvl: f64,
+    #[serde(rename = "marketId")]
+    pub market_id: String,
+    #[serde(rename = "lpMint")]
+    pub lp_mint: TokenInfo,
+    #[serde(rename = "lpPrice")]
+    pub lp_price: f64,
+    #[serde(rename = "lpAmount")]
+    pub lp_amount: f64,
+    #[serde(rename = "burnPercent")]
+    pub burn_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenInfo {
+    #[serde(rename = "chainId")]
+    pub chain_id: i32,
+    pub address: String,
+    #[serde(rename = "programId")]
+    pub program_id: String,
+    #[serde(rename = "logoURI")]
+    pub logo_uri: String,
+    pub symbol: String,
+    pub name: String,
+    pub decimals: i32,
+    pub tags: Vec<String>,
+    pub extensions: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PoolStats {
+    pub volume: f64,
+    #[serde(rename = "volumeQuote")]
+    pub volume_quote: f64,
+    #[serde(rename = "volumeFee")]
+    pub volume_fee: f64,
+    pub apr: f64,
+    #[serde(rename = "feeApr")]
+    pub fee_apr: f64,
+    #[serde(rename = "priceMin")]
+    pub price_min: f64,
+    #[serde(rename = "priceMax")]
+    pub price_max: f64,
+    #[serde(rename = "rewardApr")]
+    pub reward_apr: Vec<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RaydiumPool {
+    pub id: String,
+    #[serde(rename = "baseMint")]
+    pub base_mint: String,
+    #[serde(rename = "quoteMint")]
+    pub quote_mint: String,
+    #[serde(rename = "lpMint")]
+    pub lp_mint: String,
+    #[serde(rename = "baseDecimals")]
+    pub base_decimals: u8,
+    #[serde(rename = "quoteDecimals")]
+    pub quote_decimals: u8,
+    pub version: u8,
+    #[serde(rename = "programId")]
+    pub program_id: String,
+    #[serde(rename = "authority")]
+    pub authority: String,
+    #[serde(rename = "openOrders")]
+    pub open_orders: String,
+    #[serde(rename = "targetOrders")]
+    pub target_orders: String,
+    #[serde(rename = "baseVault")]
+    pub base_vault: String,
+    #[serde(rename = "quoteVault")]
+    pub quote_vault: String,
+    #[serde(rename = "marketId")]
+    pub market_id: String,
+    #[serde(rename = "marketProgramId")]
+    pub market_program_id: String,
+    #[serde(rename = "marketAuthority")]
+    pub market_authority: String,
+    #[serde(rename = "marketBaseVault")]
+    pub market_base_vault: String,
+    #[serde(rename = "marketQuoteVault")]
+    pub market_quote_vault: String,
+    #[serde(rename = "marketBids")]
+    pub market_bids: String,
+    #[serde(rename = "marketAsks")]
+    pub market_asks: String,
+    #[serde(rename = "marketEventQueue")]
+    pub market_event_queue: String,
 }
 
 #[derive(Debug)]
-pub struct AccountFlags {
-    pub initialized: bool,
-    pub market: bool,
-    pub open_orders: bool,
-    pub request_queue: bool,
-    pub event_queue: bool,
-    pub bids: bool,
-    pub asks: bool,
-}
-
-#[derive(BorshDeserialize, BorshSerialize, Debug)]
-pub struct MarketStateV3 {
-    pub account_flags: u64,
-    pub own_address: Pubkey,
-    pub vault_signer_nonce: u64,
+pub struct PoolKeys {
+    pub id: Pubkey,
     pub base_mint: Pubkey,
     pub quote_mint: Pubkey,
     pub base_vault: Pubkey,
-    pub base_deposits_total: u64,
-    pub base_fees_accrued: u64,
     pub quote_vault: Pubkey,
-    pub quote_deposits_total: u64,
-    pub quote_fees_accrued: u64,
-    pub quote_dust_threshold: u64,
-    pub request_queue: Pubkey,
-    pub event_queue: Pubkey,
+    pub open_orders: Pubkey,
+    pub target_orders: Pubkey,
+    pub market_id: Pubkey,
+    pub market_base_vault: Pubkey,
+    pub market_quote_vault: Pubkey,
+    pub market_authority: Pubkey,
     pub bids: Pubkey,
     pub asks: Pubkey,
-    pub base_lot_size: u64,
-    pub quote_lot_size: u64,
-    pub fee_rate_bps: u64,
-    pub referrer_rebate_accrued: u64,
+    pub event_queue: Pubkey,
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Debug)]
-pub struct OpenOrders {
-    pub account_flags: u64,
-    pub market: Pubkey,
-    pub owner: Pubkey,
-    pub base_token_free: u64,
-    pub base_token_total: u64,
-    pub quote_token_free: u64,
-    pub quote_token_total: u64,
-    pub free_slot_bits: [u8; 16],
-    pub is_bid_bits: [u8; 16],
-    pub orders: [[u8; 16]; 128],
-    pub client_ids: [u64; 128],
-    pub referrer_rebate_accrued: u64,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RaydiumPoolKeyResponse {
+    pub success: bool,
+    pub data: Vec<RaydiumPoolKeyInfo>,
 }
 
-impl AccountFlags {
-    pub fn from_u64(value: u64) -> Self {
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RaydiumPoolKeyInfo {
+    #[serde(rename = "programId")]
+    pub program_id: String,
+    pub id: String,
+    #[serde(rename = "mintA")]
+    pub mint_a: TokenInfo,
+    #[serde(rename = "mintB")]
+    pub mint_b: TokenInfo,
+    #[serde(rename = "openTime")]
+    pub open_time: String,
+    pub vault: VaultInfo,
+    pub authority: String,
+    #[serde(rename = "openOrders")]
+    pub open_orders: String,
+    #[serde(rename = "targetOrders")]
+    pub target_orders: String,
+    #[serde(rename = "mintLp")]
+    pub mint_lp: TokenInfo,
+    #[serde(rename = "marketId")]
+    pub market_id: String,
+    #[serde(rename = "marketProgramId")]
+    pub market_program_id: String,
+    #[serde(rename = "marketAuthority")]
+    pub market_authority: String,
+    #[serde(rename = "marketBaseVault")]
+    pub market_base_vault: String,
+    #[serde(rename = "marketQuoteVault")]
+    pub market_quote_vault: String,
+    #[serde(rename = "marketBids")]
+    pub market_bids: String,
+    #[serde(rename = "marketAsks")]
+    pub market_asks: String,
+    #[serde(rename = "marketEventQueue")]
+    pub market_event_queue: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VaultInfo {
+    pub A: String,
+    pub B: String,
+}
+
+impl From<RaydiumPool> for PoolKeys {
+    fn from(pool: RaydiumPool) -> Self {
         Self {
-            initialized: (value & (1 << 0)) != 0,
-            market: (value & (1 << 1)) != 0,
-            open_orders: (value & (1 << 2)) != 0,
-            request_queue: (value & (1 << 3)) != 0,
-            event_queue: (value & (1 << 4)) != 0,
-            bids: (value & (1 << 5)) != 0,
-            asks: (value & (1 << 6)) != 0,
+            id: Pubkey::from_str(&pool.id).unwrap(),
+            base_mint: Pubkey::from_str(&pool.base_mint).unwrap(),
+            quote_mint: Pubkey::from_str(&pool.quote_mint).unwrap(),
+            base_vault: Pubkey::from_str(&pool.base_vault).unwrap(),
+            quote_vault: Pubkey::from_str(&pool.quote_vault).unwrap(),
+            open_orders: Pubkey::from_str(&pool.open_orders).unwrap(),
+            target_orders: Pubkey::from_str(&pool.target_orders).unwrap(),
+            market_id: Pubkey::from_str(&pool.market_id).unwrap(),
+            market_base_vault: Pubkey::from_str(&pool.market_base_vault).unwrap(),
+            market_quote_vault: Pubkey::from_str(&pool.market_quote_vault).unwrap(),
+            market_authority: Pubkey::from_str(&pool.market_authority).unwrap(),
+            bids: Pubkey::from_str(&pool.market_bids).unwrap(),
+            asks: Pubkey::from_str(&pool.market_asks).unwrap(),
+            event_queue: Pubkey::from_str(&pool.market_event_queue).unwrap(),
+        }
+    }
+}
+
+impl From<RaydiumPoolKeyInfo> for PoolKeys {
+    fn from(pool: RaydiumPoolKeyInfo) -> Self {
+        Self {
+            id: Pubkey::from_str(&pool.id).unwrap(),
+            base_mint: Pubkey::from_str(&pool.mint_a.address).unwrap(),
+            quote_mint: Pubkey::from_str(&pool.mint_b.address).unwrap(),
+            base_vault: Pubkey::from_str(&pool.vault.A).unwrap(),
+            quote_vault: Pubkey::from_str(&pool.vault.B).unwrap(),
+            open_orders: Pubkey::from_str(&pool.open_orders).unwrap(),
+            target_orders: Pubkey::from_str(&pool.target_orders).unwrap(),
+            market_id: Pubkey::from_str(&pool.market_id).unwrap(),
+            market_base_vault: Pubkey::from_str(&pool.market_base_vault).unwrap(),
+            market_quote_vault: Pubkey::from_str(&pool.market_quote_vault).unwrap(),
+            market_authority: Pubkey::from_str(&pool.market_authority).unwrap(),
+            bids: Pubkey::from_str(&pool.market_bids).unwrap(),
+            asks: Pubkey::from_str(&pool.market_asks).unwrap(),
+            event_queue: Pubkey::from_str(&pool.market_event_queue).unwrap(),
         }
     }
 }
