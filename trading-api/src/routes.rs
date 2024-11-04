@@ -8,6 +8,10 @@ use trading_common::{
     error::AppError,
     models::{BuyRequest, BuyResponse, SellRequest, SellResponse},
     pumpdotfun::{buy::process_buy_request, sell::process_sell_request},
+    raydium::{
+        buy::process_buy_request as process_raydium_buy,
+        sell::process_sell_request as process_raydium_sell,
+    },
     utils::get_server_keypair,
     CopyTradeSettings, TrackedWallet, TransactionLog,
 };
@@ -141,5 +145,29 @@ pub async fn pump_fun_sell(
     let server_keypair = get_server_keypair();
     println!("request: {:?}", request);
     let response = process_sell_request(&rpc_client, &server_keypair, request).await?;
+    Ok(Json(response))
+}
+
+pub async fn raydium_buy(
+    State(state): State<AppState>,
+    Json(request): Json<BuyRequest>,
+) -> Result<Json<BuyResponse>, AppError> {
+    let rpc_client = state.rpc_client.load();
+    let server_keypair = get_server_keypair();
+
+    println!("Processing Raydium buy request: {:?}", request);
+    let response = process_raydium_buy(&rpc_client, &server_keypair, &request).await?;
+    Ok(Json(response))
+}
+
+pub async fn raydium_sell(
+    State(state): State<AppState>,
+    Json(request): Json<SellRequest>,
+) -> Result<Json<SellResponse>, AppError> {
+    let rpc_client = state.rpc_client.load();
+    let server_keypair = get_server_keypair();
+
+    println!("Processing Raydium sell request: {:?}", request);
+    let response = process_raydium_sell(&rpc_client, &server_keypair, &request).await?;
     Ok(Json(response))
 }
