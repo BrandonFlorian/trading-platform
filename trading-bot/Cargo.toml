@@ -22,3 +22,7 @@ solana-sdk = { workspace = true }
 solana-client = { workspace = true }
 base64 = { workspace = true }
 surf = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+spl-associated-token-account = { workspace = true }
+solana-transaction-status = { workspace = true }

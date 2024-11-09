@@ -29,8 +29,6 @@ const IPFS_GATEWAYS: &[&str] = &[
     "https://gateway.ipfs.io/ipfs/",
 ];
 
-const TIMEOUT_DURATION: Duration = Duration::from_secs(10);
-
 #[derive(Debug, Clone)]
 pub struct TokenMetadata {
     pub update_authority: String,
@@ -61,37 +59,41 @@ pub fn get_metadata_account(mint: &Pubkey) -> Pubkey {
 
 pub fn unpack_metadata_account(data: &[u8]) -> Result<TokenMetadata> {
     if data.is_empty() || data[0] != 4 {
-        anyhow::bail!("Invalid metadata account data");
+        return Err(anyhow!("Invalid metadata account data"));
     }
 
-    let mut index = 1;
+    let mut position = 1;
 
-    let get_pubkey = |data: &[u8]| {
-        let pubkey = &data[..32];
-        String::from_utf8(pubkey.to_base58().into_bytes()).unwrap()
-    };
+    // Read authority
+    let update_authority = bs58::encode(&data[position..position + 32]).into_string();
+    position += 32;
 
-    let get_string = |data: &[u8]| -> Result<(String, usize)> {
-        let len = u32::from_le_bytes(data[..4].try_into()?) as usize;
-        let string = String::from_utf8(data[4..4 + len].to_vec())?
-            .trim_matches('\0')
-            .to_string();
-        Ok((string, 4 + len))
-    };
+    // Read mint
+    let mint = bs58::encode(&data[position..position + 32]).into_string();
+    position += 32;
 
-    let update_authority = get_pubkey(&data[index..]);
-    index += 32;
+    // Read name
+    let name_length = u32::from_le_bytes(data[position..position + 4].try_into()?);
+    position += 4;
+    let name = String::from_utf8(data[position..position + name_length as usize].to_vec())?
+        .trim_matches('\0')
+        .to_string();
+    position += name_length as usize;
 
-    let mint = get_pubkey(&data[index..]);
-    index += 32;
+    // Read symbol
+    let symbol_length = u32::from_le_bytes(data[position..position + 4].try_into()?);
+    position += 4;
+    let symbol = String::from_utf8(data[position..position + symbol_length as usize].to_vec())?
+        .trim_matches('\0')
+        .to_string();
+    position += symbol_length as usize;
 
-    let (name, name_len) = get_string(&data[index..])?;
-    index += name_len;
-
-    let (symbol, symbol_len) = get_string(&data[index..])?;
-    index += symbol_len;
-
-    let (uri, _) = get_string(&data[index..])?;
+    // Read uri
+    let uri_length = u32::from_le_bytes(data[position..position + 4].try_into()?);
+    position += 4;
+    let uri = String::from_utf8(data[position..position + uri_length as usize].to_vec())?
+        .trim_matches('\0')
+        .to_string();
 
     Ok(TokenMetadata {
         update_authority,
@@ -100,92 +102,6 @@ pub fn unpack_metadata_account(data: &[u8]) -> Result<TokenMetadata> {
         symbol,
         uri,
     })
-}
-
-pub async fn get_metadata(rpc_client: &Arc<RpcClient>, mint: &Pubkey) -> Result<TokenMetadata> {
-    let metadata_account = get_metadata_account(mint);
-    let account_info = rpc_client
-        .get_account_data(&metadata_account)
-        .context("Failed to fetch metadata account data")?;
-
-    unpack_metadata_account(&account_info).context("Failed to unpack metadata account data")
-}
-
-pub async fn fetch_extended_metadata(uri: &str) -> Result<Value> {
-    println!("Fetching extended metadata from {}", uri);
-    if uri.starts_with("ipfs://") || uri.contains("/ipfs/") {
-        println!("Fetching IPFS metadata from {}", uri);
-        fetch_ipfs_metadata(uri).await
-    } else {
-        println!("Fetching HTTP metadata from {}", uri);
-        fetch_http_metadata(uri).await
-    }
-}
-
-async fn fetch_ipfs_metadata(uri: &str) -> Result<Value> {
-    let cid = uri
-        .trim_start_matches("ipfs://")
-        .trim_start_matches("https://")
-        .split("/ipfs/")
-        .nth(1)
-        .unwrap_or(uri);
-
-    for gateway in IPFS_GATEWAYS {
-        let full_uri = format!("{}{}", gateway, cid);
-        println!("Trying IPFS gateway: {}", full_uri);
-        // match TimeoutFuture::new(fetch_http_metadata(&full_uri), TIMEOUT_DURATION).await {
-        //     Ok(Ok(metadata)) => return Ok(metadata),
-        //     Ok(Err(e)) => println!("Failed to fetch from {}: {}", full_uri, e),
-        //     Err(_) => println!("Timeout when fetching from {}", full_uri),
-        // }
-    }
-
-    Err(anyhow!("Failed to fetch IPFS metadata from all gateways"))
-}
-
-async fn fetch_http_metadata(initial_uri: &str) -> Result<Value> {
-    let mut uri = initial_uri.to_string();
-    let mut redirect_count = 0;
-    const MAX_REDIRECTS: u8 = 5;
-
-    loop {
-        println!("Fetching HTTP metadata from {}", uri);
-        let mut response = HTTP_CLIENT
-            .get(&uri)
-            .await
-            .map_err(|e| anyhow!("Failed to fetch metadata from {}: {}", uri, e))?;
-
-        println!("Response: {:?}", response);
-
-        if response.status().is_redirection() {
-            if redirect_count >= MAX_REDIRECTS {
-                return Err(anyhow!("Too many redirects"));
-            }
-
-            let new_location = response
-                .header("Location")
-                .and_then(|values| values.get(0))
-                .and_then(|value| Some(value.to_string()))
-                .ok_or_else(|| anyhow!("Redirect without valid Location header"))?;
-
-            // Resolve the new location against the current URI
-            let current_url = Url::parse(&uri)?;
-            let new_url = current_url.join(&new_location)?;
-
-            println!("Following redirect to: {}", new_url);
-            uri = new_url.to_string();
-            redirect_count += 1;
-            continue;
-        }
-
-        let json: Value = response
-            .body_json()
-            .await
-            .map_err(|e| anyhow!("Failed to parse metadata JSON from {}: {}", uri, e))?;
-
-        println!("JSON: {:?}", json);
-        return Ok(json);
-    }
 }
 
 pub fn format_token_amount(amount: u64, decimals: u8) -> f64 {
@@ -233,6 +149,140 @@ pub fn extract_token_account_info(account_data: &UiAccountData) -> Option<(Strin
         _ => None,
     }
 }
+
+pub async fn get_token_balance(rpc_client: &RpcClient, token_account: &Pubkey) -> Result<f64> {
+    let account = rpc_client.get_token_account_balance(token_account)?;
+    account
+        .ui_amount
+        .ok_or_else(|| anyhow!("Failed to get token balance"))
+}
+
+pub async fn get_metadata(rpc_client: &Arc<RpcClient>, mint: &Pubkey) -> Result<TokenMetadata> {
+    let metadata_account = get_metadata_account(mint);
+    let account_info = rpc_client
+        .get_account_data(&metadata_account)
+        .context("Failed to fetch metadata account data")?;
+
+    unpack_metadata_account(&account_info).context("Failed to unpack metadata account data")
+}
+
+pub async fn fetch_extended_metadata(uri: &str) -> Result<Value> {
+    println!("Fetching extended metadata from {}", uri);
+    if uri.starts_with("ipfs://") || uri.contains("/ipfs/") {
+        println!("Fetching IPFS metadata from {}", uri);
+        fetch_ipfs_metadata(uri).await
+    } else {
+        println!("Fetching HTTP metadata from {}", uri);
+        fetch_http_metadata(uri).await
+    }
+}
+
+async fn fetch_ipfs_metadata(uri: &str) -> Result<Value> {
+    let cid = uri
+        .trim_start_matches("ipfs://")
+        .trim_start_matches("https://")
+        .split("/ipfs/")
+        .nth(1)
+        .unwrap_or(uri);
+
+    for gateway in IPFS_GATEWAYS {
+        let full_uri = format!("{}{}", gateway, cid);
+        println!("Trying IPFS gateway: {}", full_uri);
+    }
+
+    Err(anyhow!("Failed to fetch IPFS metadata from all gateways"))
+}
+
+async fn fetch_http_metadata(initial_uri: &str) -> Result<Value> {
+    let mut uri = initial_uri.to_string();
+    let mut redirect_count = 0;
+    const MAX_REDIRECTS: u8 = 5;
+
+    loop {
+        println!("Fetching HTTP metadata from {}", uri);
+        let mut response = HTTP_CLIENT
+            .get(&uri)
+            .await
+            .map_err(|e| anyhow!("Failed to fetch metadata from {}: {}", uri, e))?;
+
+        println!("Response: {:?}", response);
+
+        if response.status().is_redirection() {
+            if redirect_count >= MAX_REDIRECTS {
+                return Err(anyhow!("Too many redirects"));
+            }
+
+            let new_location = response
+                .header("Location")
+                .and_then(|values| values.get(0))
+                .map(|value| value.to_string())
+                .ok_or_else(|| anyhow!("Redirect without valid Location header"))?;
+
+            // Resolve the new location against the current URI
+            let current_url = Url::parse(&uri)?;
+            let new_url = current_url.join(&new_location)?;
+
+            println!("Following redirect to: {}", new_url);
+            uri = new_url.to_string();
+            redirect_count += 1;
+            continue;
+        }
+
+        let json: Value = response
+            .body_json()
+            .await
+            .map_err(|e| anyhow!("Failed to parse metadata JSON from {}: {}", uri, e))?;
+
+        println!("JSON: {:?}", json);
+        return Ok(json);
+    }
+}
+
+// pub fn format_token_amount(amount: u64, decimals: u8) -> f64 {
+//     (amount as f64) / 10f64.powi(decimals as i32)
+// }
+
+// pub fn format_balance(balance: f64, decimals: u8) -> String {
+//     if balance == 0.0 {
+//         "0".to_string()
+//     } else if balance < 0.000001 {
+//         format!("{:.8}", balance)
+//     } else {
+//         format!("{:.6}", balance)
+//             .trim_end_matches('0')
+//             .trim_end_matches('.')
+//             .to_string()
+//     }
+// }
+
+// pub fn extract_token_account_info(account_data: &UiAccountData) -> Option<(String, u64, u8)> {
+//     match account_data {
+//         UiAccountData::Json(parsed_account) => {
+//             let info = parsed_account
+//                 .parsed
+//                 .as_object()?
+//                 .get("info")?
+//                 .as_object()?;
+
+//             let mint = info.get("mint")?.as_str()?.to_string();
+//             let balance = info
+//                 .get("tokenAmount")?
+//                 .as_object()?
+//                 .get("amount")?
+//                 .as_str()?
+//                 .parse::<u64>()
+//                 .ok()?;
+//             let decimals = info
+//                 .get("tokenAmount")?
+//                 .as_object()?
+//                 .get("decimals")?
+//                 .as_u64()? as u8;
+
+//             Some((mint, balance, decimals))
+//         }
+//         _ => None,
+//     }
+// }
 
 pub async fn confirm_transaction(
     rpc_client: &RpcClient,
@@ -297,18 +347,18 @@ pub async fn sleeper(
     *retry_count
 }
 
-pub async fn get_token_balance(
-    rpc_client: &RpcClient,
-    token_account: &Pubkey,
-) -> Result<f64, AppError> {
-    let account = rpc_client
-        .get_token_account_balance(token_account)
-        .map_err(AppError::SolanaRpcError)?;
+// pub async fn get_token_balance(
+//     rpc_client: &RpcClient,
+//     token_account: &Pubkey,
+// ) -> Result<f64, AppError> {
+//     let account = rpc_client
+//         .get_token_account_balance(token_account)
+//         .map_err(AppError::SolanaRpcError)?;
 
-    account
-        .ui_amount
-        .ok_or_else(|| AppError::BadRequest("Failed to get token balance".to_string()))
-}
+//     account
+//         .ui_amount
+//         .ok_or_else(|| AppError::BadRequest("Failed to get token balance".to_string()))
+// }
 
 pub fn validate_token_address(address: &str) -> Result<(), AppError> {
     match Pubkey::from_str(address) {

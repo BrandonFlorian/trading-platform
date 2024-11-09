@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use crate::error::AppError;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
@@ -13,14 +11,17 @@ use solana_sdk::{
     transaction::Transaction,
 };
 use solana_transaction_status::UiTransactionEncoding;
+use std::str::FromStr;
 
 use crate::models::{BuyRequest, BuyResponse};
 use crate::utils::confirm_transaction;
 
 use super::{
     constants::*,
-    types::{PumpFunCalcResult, PumpFunTokenContainer, TokenAccountOwnerContainer},
-    utils::{ensure_token_account, get_bonding_curve_info, get_coin_data},
+    types::{
+        BondingCurveData, PumpFunCalcResult, PumpFunTokenContainer, TokenAccountOwnerContainer,
+    },
+    utils::{derive_trading_accounts, ensure_token_account, get_bonding_curve_data},
 };
 
 pub async fn buy(
@@ -47,27 +48,17 @@ pub async fn buy(
         slippage * 100.0
     );
 
-    // Get virtual reserves from bonding curve
-    let (virtual_token_reserves, virtual_sol_reserves) =
-        get_bonding_curve_info(rpc_client, pump_fun_token_container).await?;
+    // Get bonding curve data directly from chain
+    let bonding_curve_data =
+        get_bonding_curve_data(rpc_client, &pump_fun_token_container.mint_address).await?;
 
-    let virtual_token_reserves = virtual_token_reserves as f64;
-    let virtual_sol_reserves = virtual_sol_reserves as f64;
+    // Calculate amounts using bonding curve data
+    let (token_out, sol_in_lamports) = bonding_curve_data.calculate_buy_amount(sol_quantity);
+    let max_sol_cost = (sol_in_lamports as f64 * (1.0 + slippage)) as u64;
 
-    // Calculate expected token output
-    let sol_in_lamports = sol_quantity * LAMPORTS_PER_SOL as f64;
-    let token_out = ((sol_in_lamports * virtual_token_reserves) / virtual_sol_reserves) as u64;
-
-    if token_out == 0 {
-        return Err(AppError::BadRequest(
-            "Calculated token output is zero".to_string(),
-        ));
-    }
-
-    // Calculate min/max outputs
-    let decimals = 9;
-
-    let max_token_output = (token_out as f64) / 10f64.powi(decimals);
+    // Calculate min/max outputs for logging
+    let decimals = 9; // Most Solana tokens use 9 decimals
+    let max_token_output = token_out as f64 / 10f64.powi(decimals);
     let min_token_output = max_token_output * (1.0 - slippage);
 
     println!(
@@ -75,15 +66,12 @@ pub async fn buy(
         min_token_output, max_token_output
     );
 
-    // Calculate max SOL cost with slippage
-    let max_sol_cost = (sol_in_lamports * (1.0 + slippage)) as u64;
-
     println!(
         "Sol in (lamports): {}, Token out: {}, Max cost: {}",
         sol_in_lamports, token_out, max_sol_cost
     );
 
-    // Build instruction
+    // Build and send transaction
     let (instruction, compute_budget_instructions) = build_buy_instructions(
         user_address,
         pump_fun_token_container,
@@ -92,7 +80,6 @@ pub async fn buy(
         max_sol_cost,
     )?;
 
-    // Send transaction
     let signature = send_buy_transaction(
         rpc_client,
         secret_keypair,
@@ -127,32 +114,22 @@ fn build_buy_instructions(
     token_out: u64,
     max_sol_cost: u64,
 ) -> Result<(Instruction, Vec<Instruction>), AppError> {
+    // Build instruction data
     let mut data = Vec::with_capacity(24);
     data.extend_from_slice(&BUY_DISCRIMINATOR);
     data.extend_from_slice(&token_out.to_le_bytes());
     data.extend_from_slice(&max_sol_cost.to_le_bytes());
 
-    let bonding_curve_pubkey = Pubkey::from_str(
-        &pump_fun_token_container
-            .pump_fun_coin_data
-            .as_ref()
-            .unwrap()
-            .bonding_curve,
-    )?;
-    let associated_bonding_curve_pubkey = Pubkey::from_str(
-        &pump_fun_token_container
-            .pump_fun_coin_data
-            .as_ref()
-            .unwrap()
-            .associated_bonding_curve,
-    )?;
+    // Get trading accounts
+    let (bonding_curve, associated_bonding_curve) =
+        derive_trading_accounts(&pump_fun_token_container.mint_address)?;
 
     let accounts = vec![
         AccountMeta::new_readonly(GLOBAL, false),
         AccountMeta::new(FEE_RECIPIENT, false),
         AccountMeta::new_readonly(pump_fun_token_container.mint_address, false),
-        AccountMeta::new(bonding_curve_pubkey, false),
-        AccountMeta::new(associated_bonding_curve_pubkey, false),
+        AccountMeta::new(bonding_curve, false),
+        AccountMeta::new(associated_bonding_curve, false),
         AccountMeta::new(
             token_account_container.token_account_address.unwrap(),
             false,
@@ -165,6 +142,7 @@ fn build_buy_instructions(
         AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false),
     ];
 
+    // Create instructions
     let instruction = Instruction::new_with_bytes(PUMP_FUN_PROGRAM_ID, &data, accounts);
     let compute_budget_instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_price(UNIT_PRICE),
@@ -216,12 +194,10 @@ pub async fn process_buy_request(
 
     println!("Token address: {:?}", token_address);
 
-    let coin_data = get_coin_data(&token_address).await?;
-    println!("Coin data: {:?}", coin_data);
-
+    // Create containers
     let pump_fun_token_container = PumpFunTokenContainer {
         mint_address: token_address,
-        pump_fun_coin_data: Some(coin_data),
+        pump_fun_coin_data: None, // We don't need the API data anymore
         program_account_info: None,
     };
 
@@ -239,6 +215,7 @@ pub async fn process_buy_request(
         token_account_address: Some(token_account),
     };
 
+    // Execute buy
     let signature = buy(
         rpc_client,
         server_keypair,
@@ -249,27 +226,17 @@ pub async fn process_buy_request(
     )
     .await?;
 
-    let calcs = PumpFunCalcResult::new(
-        pump_fun_token_container
-            .pump_fun_coin_data
-            .as_ref()
-            .unwrap()
-            .virtual_token_reserves,
-        pump_fun_token_container
-            .pump_fun_coin_data
-            .as_ref()
-            .unwrap()
-            .virtual_sol_reserves,
-        request.sol_quantity,
-        request.slippage_tolerance,
-        9,
-    );
+    // Get bonding curve data for calculations
+    let bonding_curve_data = get_bonding_curve_data(rpc_client, &token_address).await?;
+
+    let (token_out, _) = bonding_curve_data.calculate_buy_amount(request.sol_quantity);
+    let adjusted_token_output = token_out as f64 / 1e9; // Convert to human readable
 
     Ok(BuyResponse {
         success: true,
         signature: signature.to_string(),
         solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
-        token_quantity: calcs.adjusted_max_token_output,
+        token_quantity: adjusted_token_output,
         sol_spent: request.sol_quantity,
         error: None,
     })

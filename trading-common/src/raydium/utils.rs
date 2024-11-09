@@ -13,7 +13,7 @@ use std::str::FromStr;
 use crate::error::AppError;
 
 use super::{
-    layouts::{
+    types::{
         PoolKeys, RaydiumApiResponse, RaydiumPoolInfo, RaydiumPoolKeyInfo, RaydiumPoolKeyResponse,
     },
     COMPUTE_BUDGET_PRICE, COMPUTE_BUDGET_UNITS, OPEN_BOOK_PROGRAM, RAY_AUTHORITY_V4, RAY_V4,

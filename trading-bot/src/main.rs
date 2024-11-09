@@ -45,29 +45,32 @@ async fn main() -> Result<()> {
 
     let event_system = Arc::new(EventSystem::new());
 
-    let mut server_wallet_manager = ServerWalletManager::new(
-        Arc::clone(&rpc_client),
-        server_keypair.pubkey(),
-        event_system.clone(),
-    )
-    .await
-    .context("Failed to initialize ServerWalletManager")?;
-
-    // Refresh balances before printing
-    //server_wallet_manager.refresh_balances().await?;
+    // Create ServerWalletManager inside Arc<Mutex>
+    let server_wallet_manager = Arc::new(tokio::sync::Mutex::new(
+        ServerWalletManager::new(
+            Arc::clone(&rpc_client),
+            server_keypair.pubkey(),
+            event_system.clone(),
+        )
+        .await
+        .context("Failed to initialize ServerWalletManager")?,
+    ));
 
     // Print server wallet balances
-    println!("Server Wallet Address: {}", server_keypair.pubkey());
-    println!(
-        "SOL Balance: {} SOL",
-        server_wallet_manager.get_sol_balance().await?
-    );
-    println!("Token Balances:");
-    for token_info in server_wallet_manager.get_token_values() {
+    {
+        let wallet_manager = server_wallet_manager.lock().await;
+        println!("Server Wallet Address: {}", server_keypair.pubkey());
         println!(
-            "  {}: {} {}",
-            token_info.name, token_info.balance, token_info.symbol
+            "SOL Balance: {} SOL",
+            wallet_manager.get_sol_balance().await?
         );
+        println!("Token Balances:");
+        for token_info in wallet_manager.get_token_values() {
+            println!(
+                "  {}: {} {}",
+                token_info.name, token_info.balance, token_info.symbol
+            );
+        }
     }
 
     let (tx_sender, mut tx_receiver) = mpsc::channel(100);
@@ -79,6 +82,7 @@ async fn main() -> Result<()> {
         server_keypair,
         tx_sender,
         event_system.clone(),
+        Arc::clone(&server_wallet_manager),
     )
     .await?;
 

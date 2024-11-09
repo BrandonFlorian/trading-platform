@@ -21,7 +21,7 @@ use crate::{
 use super::{
     constants::*,
     types::{PumpFunTokenContainer, TokenAccountOwnerContainer},
-    utils::{ensure_token_account, get_bonding_curve_info, get_coin_data},
+    utils::{derive_trading_accounts, ensure_token_account, get_bonding_curve_data},
 };
 
 pub async fn sell(
@@ -39,6 +39,7 @@ pub async fn sell(
         secret_keypair.pubkey()
     );
 
+    // Get token holdings
     let token_holdings = rpc_client
         .get_token_account_balance(&token_account_container.token_account_address.unwrap())?;
 
@@ -50,24 +51,31 @@ pub async fn sell(
     println!("Token balance: {} (smallest unit)", token_balance);
     println!("Token decimals: {}", token_decimals);
 
-    let (virtual_token_reserves, virtual_sol_reserves) =
-        get_bonding_curve_info(rpc_client, pump_fun_token_container).await?;
+    // Get bonding curve data from chain
+    let bonding_curve_data =
+        get_bonding_curve_data(rpc_client, &pump_fun_token_container.mint_address).await?;
 
     println!(
         "Token Reserves for {}",
         token_account_container.mint_address
     );
-    println!("Virtual token reserves: {}", virtual_token_reserves);
-    println!("Virtual sol reserves: {}", virtual_sol_reserves);
+    println!(
+        "Virtual token reserves: {}",
+        bonding_curve_data.virtual_token_reserves
+    );
+    println!(
+        "Virtual sol reserves: {}",
+        bonding_curve_data.virtual_sol_reserves
+    );
 
-    let token_amount = token_quantity * 10f64.powi(token_decimals as i32);
-    let price_per_token = virtual_sol_reserves as f64 / virtual_token_reserves as f64;
-    let expected_sol_output = token_amount * price_per_token;
-    let min_sol_output = (expected_sol_output * (1.0 - slippage)) as u64;
+    // Calculate sell amounts
+    let (token_amount, expected_sol_output) =
+        bonding_curve_data.calculate_sell_amount(token_quantity, token_decimals);
+    let min_sol_output = (expected_sol_output as f64 * (1.0 - slippage)) as u64;
 
     println!(
         "Expected SOL output: {} SOL",
-        expected_sol_output / LAMPORTS_PER_SOL as f64
+        expected_sol_output as f64 / LAMPORTS_PER_SOL as f64
     );
     println!(
         "Minimum SOL output with slippage: {} SOL",
@@ -78,7 +86,7 @@ pub async fn sell(
         user_address,
         pump_fun_token_container,
         token_account_container,
-        token_amount as u64,
+        token_amount,
         min_sol_output,
     )?;
 
@@ -118,30 +126,16 @@ fn build_sell_instructions(
     data.extend_from_slice(&token_amount.to_le_bytes());
     data.extend_from_slice(&min_sol_output.to_le_bytes());
 
+    // Get trading accounts
+    let (bonding_curve, associated_bonding_curve) =
+        derive_trading_accounts(&pump_fun_token_container.mint_address)?;
+
     let accounts = vec![
         AccountMeta::new_readonly(GLOBAL, false),
         AccountMeta::new(FEE_RECIPIENT, false),
         AccountMeta::new_readonly(pump_fun_token_container.mint_address, false),
-        AccountMeta::new(
-            Pubkey::from_str(
-                &pump_fun_token_container
-                    .pump_fun_coin_data
-                    .as_ref()
-                    .unwrap()
-                    .bonding_curve,
-            )?,
-            false,
-        ),
-        AccountMeta::new(
-            Pubkey::from_str(
-                &pump_fun_token_container
-                    .pump_fun_coin_data
-                    .as_ref()
-                    .unwrap()
-                    .associated_bonding_curve,
-            )?,
-            false,
-        ),
+        AccountMeta::new(bonding_curve, false),
+        AccountMeta::new(associated_bonding_curve, false),
         AccountMeta::new(
             token_account_container.token_account_address.unwrap(),
             false,
@@ -204,10 +198,10 @@ pub async fn process_sell_request(
     let token_address = Pubkey::from_str(&request.token_address)
         .map_err(|e| AppError::BadRequest(format!("Invalid token address: {}", e)))?;
 
-    let coin_data = get_coin_data(&token_address).await?;
+    // Create containers
     let pump_fun_token_container = PumpFunTokenContainer {
         mint_address: token_address,
-        pump_fun_coin_data: Some(coin_data),
+        pump_fun_coin_data: None, // No longer need API data
         program_account_info: None,
     };
 
@@ -225,12 +219,20 @@ pub async fn process_sell_request(
         token_account_address: Some(token_account),
     };
 
+    // Verify balance
     let token_balance = get_token_balance(rpc_client, &token_account).await?;
     if token_balance < request.token_quantity {
         return Err(AppError::BadRequest(
             "Insufficient token balance".to_string(),
         ));
     }
+
+    // Get bonding curve data for price calculation
+    let bonding_curve_data = get_bonding_curve_data(rpc_client, &token_address).await?;
+    let (_, expected_sol_output) = bonding_curve_data.calculate_sell_amount(
+        request.token_quantity,
+        9, // Most Solana tokens use 9 decimals
+    );
 
     let signature = sell(
         rpc_client,
@@ -242,27 +244,11 @@ pub async fn process_sell_request(
     )
     .await?;
 
-    let virtual_token_reserves = pump_fun_token_container
-        .pump_fun_coin_data
-        .as_ref()
-        .unwrap()
-        .virtual_token_reserves as f64;
-    let virtual_sol_reserves = pump_fun_token_container
-        .pump_fun_coin_data
-        .as_ref()
-        .unwrap()
-        .virtual_sol_reserves as f64;
-
-    // Calculate SOL received
-    let token_amount_raw = request.token_quantity * 1_000_000.0;
-    let sol_received = (token_amount_raw * virtual_sol_reserves)
-        / (virtual_token_reserves * LAMPORTS_PER_SOL as f64);
-
     Ok(SellResponse {
         success: true,
         signature: signature.clone(),
         token_quantity: request.token_quantity,
-        sol_received,
+        sol_received: expected_sol_output as f64 / LAMPORTS_PER_SOL as f64,
         solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
         error: None,
     })

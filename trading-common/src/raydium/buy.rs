@@ -1,5 +1,5 @@
 use super::constants::*;
-use super::layouts::PoolKeys;
+use super::types::PoolKeys;
 use crate::{
     error::AppError,
     models::{BuyRequest, BuyResponse},

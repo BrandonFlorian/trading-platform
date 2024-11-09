@@ -1,8 +1,52 @@
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
 
 use super::LAMPORTS_PER_SOL;
+
+#[derive(Debug, Clone)]
+pub struct TokenMetadata {
+    pub mint: Pubkey, // Changed from String to Pubkey
+    pub decimals: u8,
+    pub balance: u64,
+    pub name: String,
+    pub symbol: String,
+    pub uri: Option<String>,
+    pub update_authority: Option<String>, // Made optional
+}
+
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct BondingCurveData {
+    pub padding: [u8; 8],
+    pub virtual_token_reserves: i64,
+    pub virtual_sol_reserves: i64,
+    pub real_token_reserves: i64,
+    pub real_sol_reserves: i64,
+    pub token_total_supply: i64,
+    pub complete: bool,
+}
+
+impl BondingCurveData {
+    pub fn get_price(&self) -> f64 {
+        self.virtual_sol_reserves as f64
+            / (self.virtual_token_reserves as f64 * LAMPORTS_PER_SOL as f64)
+    }
+
+    pub fn calculate_buy_amount(&self, sol_quantity: f64) -> (u64, u64) {
+        let sol_in_lamports = (sol_quantity * LAMPORTS_PER_SOL as f64) as u64;
+        let token_out = ((sol_in_lamports as f64 * self.virtual_token_reserves as f64)
+            / self.virtual_sol_reserves as f64) as u64;
+        (token_out, sol_in_lamports)
+    }
+
+    pub fn calculate_sell_amount(&self, token_quantity: f64, decimals: u8) -> (u64, u64) {
+        let token_amount = (token_quantity * 10f64.powi(decimals as i32)) as u64;
+        let expected_sol_output = ((token_amount as f64 * self.virtual_sol_reserves as f64)
+            / self.virtual_token_reserves as f64) as u64;
+        (token_amount, expected_sol_output)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PumpFunCoinData {

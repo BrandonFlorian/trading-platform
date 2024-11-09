@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::constants::*;
-use super::layouts::PoolKeys;
+use super::types::PoolKeys;
 use super::utils::*;
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
