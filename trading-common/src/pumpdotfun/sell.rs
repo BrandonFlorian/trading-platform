@@ -14,8 +14,8 @@ use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
 
 use crate::{
+    data::{confirm_transaction, get_token_balance},
     models::{SellRequest, SellResponse},
-    utils::{confirm_transaction, get_token_balance},
 };
 
 use super::{

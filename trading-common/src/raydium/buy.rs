@@ -1,6 +1,7 @@
 use super::constants::*;
 use super::types::PoolKeys;
 use crate::{
+    data::confirm_transaction,
     error::AppError,
     models::{BuyRequest, BuyResponse},
     raydium::{
@@ -9,7 +10,6 @@ use crate::{
             create_swap_instruction, create_wsol_account_instructions, get_pool_info, get_pool_keys,
         },
     },
-    utils::confirm_transaction,
 };
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{

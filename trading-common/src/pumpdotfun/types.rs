@@ -7,13 +7,13 @@ use super::LAMPORTS_PER_SOL;
 
 #[derive(Debug, Clone)]
 pub struct TokenMetadata {
-    pub mint: Pubkey, // Changed from String to Pubkey
+    pub mint: Pubkey,
     pub decimals: u8,
     pub balance: u64,
     pub name: String,
     pub symbol: String,
     pub uri: Option<String>,
-    pub update_authority: Option<String>, // Made optional
+    pub update_authority: Option<String>,
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -126,7 +126,7 @@ impl PumpFunCalcResult {
         let token_out = ((sol_in_lamports * vtokenr) / vsolr) as u64;
 
         // Convert token_out to human readable (divide by 10^6)
-        let max_token_output = token_out as f64 / 1_000_000.0; // Adjust for 6 decimals
+        let max_token_output = token_out as f64 / 1_000_000.0; // 6 decimals
         let min_token_output = max_token_output * (1.0 - slippage);
 
         Self {

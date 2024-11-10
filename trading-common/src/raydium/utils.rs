@@ -17,7 +17,7 @@ use super::{
         PoolKeys, RaydiumApiResponse, RaydiumPoolInfo, RaydiumPoolKeyInfo, RaydiumPoolKeyResponse,
     },
     COMPUTE_BUDGET_PRICE, COMPUTE_BUDGET_UNITS, OPEN_BOOK_PROGRAM, RAY_AUTHORITY_V4, RAY_V4,
-    RAY_V4_PROGRAM_ID, TOKEN_PROGRAM_ID, WSOL,
+    TOKEN_PROGRAM_ID, WSOL,
 };
 
 // Core functionality

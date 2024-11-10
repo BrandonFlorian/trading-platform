@@ -1,4 +1,7 @@
+use crate::data::{extract_token_account_info, format_balance, format_token_amount, get_metadata};
 use crate::event_system::{Event, EventSystem};
+use crate::models::WalletUpdateNotification;
+use crate::{ClientTxInfo, TransactionType};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use solana_client::rpc_client::RpcClient;
@@ -8,11 +11,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use surf::Client;
-use trading_common::models::WalletUpdateNotification;
-use trading_common::utils::{
-    extract_token_account_info, format_balance, format_token_amount, get_metadata,
-};
-use trading_common::{ClientTxInfo, TransactionType};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenInfo {
@@ -98,7 +96,7 @@ impl ServerWalletManager {
                         balance: format_balance(format_token_amount(balance, decimals), decimals),
                         metadata_uri: Some(metadata.uri),
                         decimals,
-                        market_cap: 0.0, // Updated via external price feed if needed
+                        market_cap: 0.0,
                     },
                 );
             }
@@ -180,7 +178,7 @@ impl ServerWalletManager {
                 self.update_token_balance(
                     &tx_info.token_address,
                     tx_info.amount_token,
-                    9, // Most Solana tokens use 9 decimals
+                    9, // Need to make this dynamic
                     Some(HashMap::from([
                         ("name".to_string(), tx_info.token_name.clone()),
                         ("symbol".to_string(), tx_info.token_symbol.clone()),

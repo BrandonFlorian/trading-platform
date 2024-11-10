@@ -150,7 +150,7 @@ impl SupabaseClient {
             serde_json::from_str(&body).map_err(|e| AppError::JsonParseError(e.to_string()))?;
 
         let first_wallet = inserted
-            .get(0)
+            .first()
             .ok_or_else(|| AppError::DatabaseError("No wallet was inserted".to_string()))?;
 
         first_wallet
@@ -201,7 +201,7 @@ impl SupabaseClient {
         let updated: Vec<TrackedWallet> = serde_json::from_str(&body)?;
 
         updated
-            .get(0)
+            .first()
             .ok_or_else(|| AppError::DatabaseError("No wallet was updated".to_string()))
             .map(|wallet| format!("Unarchived wallet: {}", wallet.wallet_address))
     }
@@ -277,7 +277,7 @@ impl SupabaseClient {
         let updated: Vec<TrackedWallet> = serde_json::from_str(&body)?;
 
         updated
-            .get(0)
+            .first()
             .and_then(|w| w.id)
             .ok_or_else(|| AppError::DatabaseError("Failed to update wallet".to_string()))
     }
@@ -343,7 +343,7 @@ impl SupabaseClient {
 
         let inserted: Vec<CopyTradeSettings> = serde_json::from_str(&body)?;
 
-        inserted.get(0).and_then(|s| s.id).ok_or_else(|| {
+        inserted.first().and_then(|s| s.id).ok_or_else(|| {
             AppError::DatabaseError("Failed to create copy trade settings".to_string())
         })
     }
@@ -382,7 +382,7 @@ impl SupabaseClient {
 
         let updated: Vec<CopyTradeSettings> = serde_json::from_str(&body)?;
 
-        updated.get(0).and_then(|s| s.id).ok_or_else(|| {
+        updated.first().and_then(|s| s.id).ok_or_else(|| {
             AppError::DatabaseError("Failed to update copy trade settings".to_string())
         })
     }

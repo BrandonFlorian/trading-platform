@@ -1,16 +1,14 @@
-mod event_system;
-mod server_wallet_manager;
 mod wallet_monitor;
 use anyhow::{Context, Result};
 use dotenv::dotenv;
-use event_system::EventSystem;
-use server_wallet_manager::ServerWalletManager;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::signer::Signer;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{env, sync::Arc};
-use tokio::sync::mpsc;
+use tokio::signal;
 use trading_common::database::SupabaseClient;
+use trading_common::event_system::EventSystem;
+use trading_common::server_wallet_manager::ServerWalletManager;
 use wallet_monitor::WalletMonitor;
 
 #[tokio::main]
@@ -28,6 +26,9 @@ async fn main() -> Result<()> {
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
 
     let server_keypair = Keypair::from_base58_string(&server_secret_key);
+    if server_keypair.pubkey() == Pubkey::default() {
+        return Err(anyhow::anyhow!("Invalid server secret key"));
+    }
     let user_id = server_keypair.pubkey().to_string();
 
     let supabase_client = SupabaseClient::new(
@@ -38,14 +39,10 @@ async fn main() -> Result<()> {
     );
 
     let rpc_client = Arc::new(RpcClient::new(rpc_http_url));
-    let server_keypair = Keypair::from_base58_string(&server_secret_key);
-    if server_keypair.pubkey() == Pubkey::default() {
-        return Err(anyhow::anyhow!("Invalid server secret key"));
-    }
 
     let event_system = Arc::new(EventSystem::new());
 
-    // Create ServerWalletManager inside Arc<Mutex>
+    // Initialize wallet manager
     let server_wallet_manager = Arc::new(tokio::sync::Mutex::new(
         ServerWalletManager::new(
             Arc::clone(&rpc_client),
@@ -56,7 +53,7 @@ async fn main() -> Result<()> {
         .context("Failed to initialize ServerWalletManager")?,
     ));
 
-    // Print server wallet balances
+    // Print initial wallet state
     {
         let wallet_manager = server_wallet_manager.lock().await;
         println!("Server Wallet Address: {}", server_keypair.pubkey());
@@ -73,32 +70,47 @@ async fn main() -> Result<()> {
         }
     }
 
-    let (tx_sender, mut tx_receiver) = mpsc::channel(100);
-
+    // Initialize and start wallet monitor
     let mut monitor = WalletMonitor::new(
         Arc::clone(&rpc_client),
         rpc_ws_url,
         supabase_client,
         server_keypair,
-        tx_sender,
         event_system.clone(),
         Arc::clone(&server_wallet_manager),
     )
     .await?;
 
-    tokio::spawn(async move {
+    let mut shutdown_monitor = monitor.clone();
+
+    // Create signal handler before select
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+        .context("Failed to create SIGTERM signal handler")?;
+
+    let monitor_handle = tokio::spawn(async move {
         if let Err(e) = monitor.start().await {
             eprintln!("Wallet monitor error: {:?}", e);
         }
     });
 
-    while let Some(transaction) = tx_receiver.recv().await {
-        println!("Received transaction: {:?}", transaction);
-        // Implement logic to handle received transactions
-        // - Update database
-        // - Send notifications
-        // - etc.
+    // Handle shutdown signals
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            println!("\nReceived Ctrl+C, initiating graceful shutdown...");
+        }
+        _ = sigterm.recv() => {
+            println!("\nReceived termination signal, initiating graceful shutdown...");
+        }
+        _ = monitor_handle => {
+            println!("\nMonitor task completed.");
+        }
     }
+
+    // Perform graceful shutdown
+    if let Err(e) = shutdown_monitor.stop().await {
+        eprintln!("Error during shutdown: {:?}", e);
+    }
+    println!("Shutdown complete.");
 
     Ok(())
 }

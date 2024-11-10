@@ -8,13 +8,50 @@ The platform is a rebuild of my first attempt at a trading bot, which was built 
 
 The front end is a Next.js app that can be found [here](https://github.com/BrandonFlorian/solana-tools-client). It was originally built for the python version that can be found [here](https://github.com/BrandonFlorian/solana-tools-server) but will work for both. Python version is currently a private repo and you will need to contact me for access.
 
+The front end has not been updated in a while, and is next on my todo list. If not working, please use the API directly until then and add your settings that way.
+
 ## Project Structure
 
 The project is organized as a Rust workspace with three main components:
 
-1. `trading-common`: Shared functionality and models used by both the API and bot.
-2. `trading-api`: A REST API for CRUD operations, using Supabase as a database.
-3. `trading-bot`: A bot for monitoring Solana wallets and executing trades.
+1. `trading-common`: Core functionality and shared components
+
+   - Models and types
+   - Database interactions (Supabase)
+   - Event system
+   - Server wallet management
+   - Copy trade logic
+   - Transaction processing utilities
+
+2. `trading-api`: REST API server
+
+   - CRUD operations for tracked wallets and settings
+   - Trade execution endpoints
+   - Integration with both pump.fun and Raydium DEXs
+   - Real-time wallet status updates
+
+3. `trading-bot`: Core trading engine
+   - WebSocket-based wallet monitoring
+   - Automated copy trading execution
+   - Real-time balance tracking
+   - Event-driven architecture
+
+## Features
+
+- Real-time wallet monitoring via WebSocket
+- Copy trading with customizable settings:
+  - Maximum open positions
+  - Trade amount per position
+  - Slippage tolerance
+  - Allowed tokens list
+  - Additional buy settings
+- Support for multiple DEXs:
+  - pump.fun
+  - Raydium
+- Automatic token balance tracking
+- Graceful shutdown handling
+- Robust error handling and retry logic
+- Event-based system for real-time updates
 
 ## Prerequisites
 
@@ -23,6 +60,7 @@ The project is organized as a Rust workspace with three main components:
 - Solana CLI tools
 - Supabase account and project
 - Secret key for the server wallet (this should be a fresh wallet, not used for anything else)
+- Helius RPC node access (or equivalent Solana RPC provider)
 
 ## Setup
 
@@ -88,6 +126,13 @@ The trading API provides the following endpoints:
 - `PUT /copy_trade_settings`: Update copy trade settings
 - `DELETE /copy_trade_settings/:tracked_wallet_id`: Delete copy trade settings for a specific tracked wallet
 
+### Trade Execution
+
+- `POST /pump_fun/buy`: Execute buy on pump.fun
+- `POST /pump_fun/sell`: Execute sell on pump.fun
+- `POST /raydium/buy`: Execute buy on Raydium
+- `POST /raydium/sell`: Execute sell on Raydium
+
 ### Transaction History
 
 - `GET /transaction_history`: Get transaction history
@@ -104,9 +149,11 @@ To run the trading bot:
 cargo run --bin trading-bot
 ```
 
-The bot will check the database if your wallet exists and if it is following any tracked wallets. If it is, it will connect to the RPC websocket and start monitoring the wallet and execute trades based on the settings in the database.
+The bot will check the database if your wallet exists and if it is following any tracked wallets.
 
-Currently only support pump.fun copy trading but will support all the major DEXs shortly after release.
+If it is following any tracked wallets, it will connect to the RPC websocket and start monitoring the wallet and execute trades based on the settings in the database.
+
+Currently only support pump.fun copy trading but will support all the major DEXs shortly.
 
 ## Configuration
 
