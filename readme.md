@@ -1,4 +1,4 @@
-# Solana Trading Bot
+# Solana DEX Trading Bot & API
 
 NOTE: This project is currently under development and not all functionality is available. Do not use this in production yet. Please check back soon!
 
