@@ -1,5 +1,5 @@
+use crate::error::AppError;
 use anyhow::{anyhow, Context, Result};
-use base58::ToBase58;
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use solana_account_decoder::UiAccountData;
@@ -9,14 +9,13 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signature::Signature;
 use solana_transaction_status::UiTransactionEncoding;
+use solana_transaction_status::{UiMessage, UiParsedMessage};
 use spl_token::state::Mint;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use surf::{Client, Url};
 use tokio::time::sleep;
-
-use crate::error::AppError;
 
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
@@ -238,52 +237,6 @@ async fn fetch_http_metadata(initial_uri: &str) -> Result<Value> {
     }
 }
 
-// pub fn format_token_amount(amount: u64, decimals: u8) -> f64 {
-//     (amount as f64) / 10f64.powi(decimals as i32)
-// }
-
-// pub fn format_balance(balance: f64, decimals: u8) -> String {
-//     if balance == 0.0 {
-//         "0".to_string()
-//     } else if balance < 0.000001 {
-//         format!("{:.8}", balance)
-//     } else {
-//         format!("{:.6}", balance)
-//             .trim_end_matches('0')
-//             .trim_end_matches('.')
-//             .to_string()
-//     }
-// }
-
-// pub fn extract_token_account_info(account_data: &UiAccountData) -> Option<(String, u64, u8)> {
-//     match account_data {
-//         UiAccountData::Json(parsed_account) => {
-//             let info = parsed_account
-//                 .parsed
-//                 .as_object()?
-//                 .get("info")?
-//                 .as_object()?;
-
-//             let mint = info.get("mint")?.as_str()?.to_string();
-//             let balance = info
-//                 .get("tokenAmount")?
-//                 .as_object()?
-//                 .get("amount")?
-//                 .as_str()?
-//                 .parse::<u64>()
-//                 .ok()?;
-//             let decimals = info
-//                 .get("tokenAmount")?
-//                 .as_object()?
-//                 .get("decimals")?
-//                 .as_u64()? as u8;
-
-//             Some((mint, balance, decimals))
-//         }
-//         _ => None,
-//     }
-// }
-
 pub async fn confirm_transaction(
     rpc_client: &RpcClient,
     signature: &Signature,
@@ -347,19 +300,6 @@ pub async fn sleeper(
     *retry_count
 }
 
-// pub async fn get_token_balance(
-//     rpc_client: &RpcClient,
-//     token_account: &Pubkey,
-// ) -> Result<f64, AppError> {
-//     let account = rpc_client
-//         .get_token_account_balance(token_account)
-//         .map_err(AppError::SolanaRpcError)?;
-
-//     account
-//         .ui_amount
-//         .ok_or_else(|| AppError::BadRequest("Failed to get token balance".to_string()))
-// }
-
 pub fn validate_token_address(address: &str) -> Result<(), AppError> {
     match Pubkey::from_str(address) {
         Ok(_) => Ok(()),
@@ -367,5 +307,14 @@ pub fn validate_token_address(address: &str) -> Result<(), AppError> {
             "Invalid token address: {}",
             address
         ))),
+    }
+}
+
+pub fn get_account_keys_from_message(message: &UiMessage) -> Vec<String> {
+    match message {
+        UiMessage::Parsed(UiParsedMessage { account_keys, .. }) => {
+            account_keys.iter().map(|key| key.pubkey.clone()).collect()
+        }
+        UiMessage::Raw(raw_message) => raw_message.account_keys.clone(),
     }
 }

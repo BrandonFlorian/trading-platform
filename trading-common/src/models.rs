@@ -54,6 +54,7 @@ pub struct CopyTradeSettings {
     pub is_enabled: bool,
     pub trade_amount_sol: f64,
     pub max_slippage: f64,
+    #[serde(default)]
     pub max_open_positions: i32,
     pub allowed_tokens: Option<Vec<String>>,
     pub use_allowed_tokens_list: bool,
@@ -62,6 +63,27 @@ pub struct CopyTradeSettings {
     pub min_sol_balance: f64,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl Default for CopyTradeSettings {
+    fn default() -> Self {
+        Self {
+            id: None,
+            user_id: None,
+            tracked_wallet_id: Uuid::nil(),
+            is_enabled: false,
+            trade_amount_sol: 0.0,
+            max_slippage: 0.1,
+            max_open_positions: 1,
+            allowed_tokens: None,
+            use_allowed_tokens_list: false,
+            allow_additional_buys: false,
+            match_sell_percentage: false,
+            min_sol_balance: 0.01,
+            created_at: None,
+            updated_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -103,6 +125,16 @@ pub struct WalletUpdateNotification {
     pub data: serde_json::Value,
     #[serde(rename = "type")]
     pub type_: String,
+}
+
+#[derive(Debug)]
+pub struct TokenTransactionInfo {
+    pub token_address: String,
+    pub amount: f64,
+    pub sol_amount: f64,
+    pub price_per_token: f64,
+    pub buyer: String,
+    pub seller: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -27,7 +27,9 @@ impl SupabaseClient {
         }
     }
 
-    pub async fn user_exists(&self, user_id: &str) -> Result<bool> {
+    pub async fn user_exists(&self, user_id: &str) -> Result<bool, AppError> {
+        println!("Checking if user exists: {}", user_id);
+
         let result = self
             .client
             .from("users")
@@ -35,27 +37,64 @@ impl SupabaseClient {
             .eq("wallet_address", user_id)
             .execute()
             .await
-            .context("Failed to check if user exists")?;
-        println!("User exists: {:?}", result);
-        Ok(!result.text().await?.is_empty())
+            .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+        let body = result
+            .text()
+            .await
+            .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+        println!("User exists check response body: {}", body);
+
+        // Parse body as JSON array and check if it's not empty
+        let users: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| {
+            AppError::JsonParseError(format!("Failed to parse user response: {}", e))
+        })?;
+
+        Ok(!users.is_empty()) // Return true only if we got results
     }
 
-    pub async fn create_user(&self, user_id: &str) -> Result<Uuid> {
+    pub async fn create_user(&self, user_id: &str) -> Result<Uuid, AppError> {
+        println!("Attempting to create user with wallet address: {}", user_id);
+
+        let insert_data = json!({"wallet_address": user_id});
+        println!("Insert data: {}", insert_data);
+
         let resp = self
             .client
             .from("users")
-            .insert(json!({"wallet_address": user_id}).to_string())
+            .insert(insert_data.to_string())
             .execute()
             .await
-            .context("Failed to create user")?;
-        let body = resp.text().await.context("Failed to create user")?;
-        let inserted: Vec<User> = serde_json::from_str(&body)?;
+            .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+        let status = resp.status();
+        println!("Create user response status: {}", status);
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::RequestError(e.to_string()))?;
+        println!("Create user response body: {}", body);
+
+        if status != 201 && status != 200 {
+            return Err(AppError::DatabaseError(format!(
+                "Failed to create user. Status: {}, Body: {}",
+                status, body
+            )));
+        }
+
+        let inserted: Vec<User> = serde_json::from_str(&body).map_err(|e| {
+            AppError::JsonParseError(format!("Failed to parse user response: {}", e))
+        })?;
+
         let first_user = inserted
             .first()
-            .ok_or_else(|| anyhow::anyhow!("No user was inserted"))?;
+            .ok_or_else(|| AppError::DatabaseError("No user was inserted".to_string()))?;
+
         first_user
             .id
-            .ok_or_else(|| anyhow::anyhow!("Inserted user has no ID"))
+            .ok_or_else(|| AppError::DatabaseError("Inserted user has no ID".to_string()))
     }
 
     pub async fn get_tracked_wallets(&self) -> Result<Vec<TrackedWallet>, AppError> {
@@ -257,7 +296,16 @@ impl SupabaseClient {
             .text()
             .await
             .map_err(|e| AppError::RequestError(e.to_string()))?;
-        let settings: Vec<CopyTradeSettings> = serde_json::from_str(&body)?;
+
+        println!("Raw copy trade settings response: {}", body);
+
+        let settings: Vec<CopyTradeSettings> = serde_json::from_str(&body).map_err(|e| {
+            AppError::JsonParseError(format!(
+                "Failed to parse copy trade settings: {}. Raw response: {}",
+                e, body
+            ))
+        })?;
+
         Ok(settings)
     }
 
@@ -411,5 +459,26 @@ impl SupabaseClient {
             .first()
             .map(|t| t.id)
             .ok_or_else(|| anyhow::anyhow!("Failed to get ID of inserted transaction"))
+    }
+
+    // Helper function to verify table schema matches our struct
+    pub async fn verify_copy_trade_settings_schema(&self) -> Result<(), AppError> {
+        let resp = self
+            .client
+            .from("copy_trade_settings")
+            .select("*")
+            .limit(0)
+            .execute()
+            .await
+            .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+        let schema = resp
+            .text()
+            .await
+            .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+        println!("Copy trade settings schema: {}", schema);
+
+        Ok(())
     }
 }

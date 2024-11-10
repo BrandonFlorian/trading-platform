@@ -1,7 +1,6 @@
 use crate::event_system::{Event, EventSystem};
 use anyhow::{Context, Result};
 use serde::Serialize;
-use serde_json::json;
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_request::TokenAccountsFilter;
 use solana_sdk::pubkey::Pubkey;
@@ -11,8 +10,7 @@ use std::sync::Arc;
 use surf::Client;
 use trading_common::models::WalletUpdateNotification;
 use trading_common::utils::{
-    extract_token_account_info, fetch_extended_metadata, format_balance, format_token_amount,
-    get_metadata,
+    extract_token_account_info, format_balance, format_token_amount, get_metadata,
 };
 use trading_common::{ClientTxInfo, TransactionType};
 

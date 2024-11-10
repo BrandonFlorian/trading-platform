@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use borsh::BorshDeserialize;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, transaction::Transaction};
-use std::{str::FromStr, sync::Arc};
+use std::str::FromStr;
 
 use super::{
     types::{PumpFunCoinData, PumpFunTokenContainer},
@@ -110,91 +110,6 @@ pub fn decode_bonding_curve_data(data: &[u8]) -> Result<(i64, i64)> {
 
     Ok((virtual_token_reserves, virtual_sol_reserves))
 }
-
-// pub async fn get_bonding_curve_data(
-//     rpc_client: &Arc<RpcClient>,
-//     mint: &Pubkey,
-// ) -> Result<BondingCurveData> {
-//     let (bonding_curve, _) =
-//         Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &PUMP_FUN_PROGRAM_ID);
-
-//     let account_data = rpc_client.get_account_data(&bonding_curve)?;
-//     let curve_data = BondingCurveData::try_from_slice(&account_data)?;
-
-//     Ok(curve_data)
-// }
-
-// Helper function to derive necessary accounts for trading
-// pub fn derive_trading_accounts(mint: &Pubkey) -> Result<(Pubkey, Pubkey)> {
-//     let (bonding_curve, _) =
-//         Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &PUMP_FUN_PROGRAM_ID);
-
-//     let associated_bonding_curve =
-//         spl_associated_token_account::get_associated_token_address(&bonding_curve, mint);
-
-//     Ok((bonding_curve, associated_bonding_curve))
-// }
-
-// pub async fn get_bonding_curve_info(
-//     rpc_client: &RpcClient,
-//     pump_fun_token_container: &PumpFunTokenContainer,
-// ) -> Result<(i64, i64), AppError> {
-//     let bonding_curve_pubkey = Pubkey::from_str(
-//         &pump_fun_token_container
-//             .pump_fun_coin_data
-//             .as_ref()
-//             .unwrap()
-//             .bonding_curve,
-//     )
-//     .context("Failed to parse bonding curve pubkey")?;
-
-//     println!("Bonding curve pubkey: {}", bonding_curve_pubkey);
-//     let account_info = rpc_client
-//         .get_account_data(&bonding_curve_pubkey)
-//         .context("Failed to get account info")?;
-
-//     if account_info.is_empty() {
-//         return Err(AppError::BadRequest(
-//             "Account not found or no data available".to_string(),
-//         ));
-//     }
-
-//     let (virtual_token_reserves, virtual_sol_reserves) = decode_bonding_curve_data(&account_info)?;
-
-//     // Compare with pump.fun values
-//     let pump_fun_virtual_token_reserves = pump_fun_token_container
-//         .pump_fun_coin_data
-//         .as_ref()
-//         .unwrap()
-//         .virtual_token_reserves;
-//     let pump_fun_virtual_sol_reserves = pump_fun_token_container
-//         .pump_fun_coin_data
-//         .as_ref()
-//         .unwrap()
-//         .virtual_sol_reserves;
-
-//     println!(
-//         "Chain values: {} {}, API values: {} {}",
-//         virtual_token_reserves,
-//         virtual_sol_reserves,
-//         pump_fun_virtual_token_reserves,
-//         pump_fun_virtual_sol_reserves
-//     );
-
-//     // Threshold check
-//     let within_threshold = (virtual_sol_reserves as f64
-//         * (1.0 - super::constants::BONDING_CURVE_MARGIN_OF_ERROR)
-//         < pump_fun_virtual_sol_reserves as f64)
-//         && (virtual_token_reserves as f64
-//             * (1.0 - super::constants::BONDING_CURVE_MARGIN_OF_ERROR)
-//             < pump_fun_virtual_token_reserves as f64);
-
-//     if !within_threshold {
-//         println!("Warning: Chain values differ significantly from API values");
-//     }
-
-//     Ok((virtual_token_reserves, virtual_sol_reserves))
-// }
 
 pub async fn ensure_token_account(
     rpc_client: &RpcClient,

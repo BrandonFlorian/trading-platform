@@ -37,6 +37,8 @@ impl EventSystem {
     }
 
     pub async fn handle_tracked_wallet_trade(&self, notification: TrackedWalletNotification) {
+        println!("Handling tracked wallet trade notification...");
+        println!("{:?}", notification);
         self.emit(Event::TrackedWalletTransaction(notification));
     }
 

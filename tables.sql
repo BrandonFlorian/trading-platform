@@ -29,7 +29,7 @@ CREATE TABLE copy_trade_settings (
   is_enabled BOOLEAN DEFAULT false,
   trade_amount_sol DECIMAL(18, 9) NOT NULL,
   max_slippage DECIMAL(5, 2) DEFAULT 1.00,
-  max_open_trades INT DEFAULT 1,
+  max_open_positions INT DEFAULT 1,
   allow_additional_buys BOOLEAN DEFAULT false,
   match_sell_percentage BOOLEAN DEFAULT false,
   allowed_tokens TEXT[],
