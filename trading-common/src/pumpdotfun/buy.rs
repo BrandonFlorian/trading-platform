@@ -13,8 +13,8 @@ use solana_sdk::{
 use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
 
-use crate::data::confirm_transaction;
 use crate::models::{BuyRequest, BuyResponse};
+use crate::utils::data::confirm_transaction;
 
 use super::{
     constants::*,

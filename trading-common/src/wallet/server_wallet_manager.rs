@@ -1,6 +1,8 @@
-use crate::data::{extract_token_account_info, format_balance, format_token_amount, get_metadata};
 use crate::event_system::{Event, EventSystem};
 use crate::models::WalletUpdateNotification;
+use crate::utils::data::{
+    extract_token_account_info, format_balance, format_token_amount, get_metadata,
+};
 use crate::{ClientTxInfo, TransactionType};
 use anyhow::{Context, Result};
 use serde::Serialize;

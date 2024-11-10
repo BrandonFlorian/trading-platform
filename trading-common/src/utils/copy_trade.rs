@@ -4,9 +4,9 @@ use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::data::get_token_balance;
 use crate::models::SellRequest;
 use crate::pumpdotfun::{process_buy_request, process_sell_request};
+use crate::utils::data::get_token_balance;
 use crate::wallet::server_wallet_manager::ServerWalletManager;
 use crate::{models::BuyRequest, ClientTxInfo, CopyTradeSettings, TransactionType};
 pub async fn should_copy_trade(

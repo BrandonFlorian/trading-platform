@@ -1,5 +1,4 @@
 pub mod constants;
-pub mod data;
 pub mod database;
 pub mod error;
 pub mod models;
@@ -7,6 +6,7 @@ pub mod pumpdotfun;
 pub mod raydium;
 pub mod utils {
     pub mod copy_trade;
+    pub mod data;
     pub mod transaction;
 }
 pub mod wallet {
