@@ -1,4 +1,7 @@
+use crate::data::{extract_token_account_info, format_balance, format_token_amount, get_metadata};
 use crate::event_system::{Event, EventSystem};
+use crate::models::WalletUpdateNotification;
+use crate::{ClientTxInfo, TransactionType};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use solana_client::rpc_client::RpcClient;
@@ -8,11 +11,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use surf::Client;
-use trading_common::models::WalletUpdateNotification;
-use trading_common::utils::{
-    extract_token_account_info, format_balance, format_token_amount, get_metadata,
-};
-use trading_common::{ClientTxInfo, TransactionType};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenInfo {

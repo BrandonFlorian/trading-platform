@@ -1,8 +1,10 @@
 use tokio::sync::broadcast;
-use trading_common::models::{
+
+use crate::models::{
     CopyTradeNotification, TrackedWalletNotification, TransactionLoggedNotification,
     WalletUpdateNotification,
 };
+
 #[derive(Clone)]
 pub enum Event {
     TrackedWalletTransaction(TrackedWalletNotification),

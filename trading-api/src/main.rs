@@ -10,7 +10,7 @@ use solana_sdk::signer::Signer;
 use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
-use trading_common::{utils::get_server_keypair, SupabaseClient};
+use trading_common::{data::get_server_keypair, SupabaseClient};
 mod routes;
 
 #[derive(Clone)]

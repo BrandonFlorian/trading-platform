@@ -2,9 +2,9 @@ use std::str::FromStr;
 
 use crate::{
     create_wsol_account_instructions,
+    data::confirm_transaction,
     error::AppError,
     models::{SellRequest, SellResponse},
-    utils::confirm_transaction,
 };
 
 use super::constants::*;

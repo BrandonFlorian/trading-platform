@@ -1,16 +1,14 @@
-mod event_system;
-mod server_wallet_manager;
 mod wallet_monitor;
 use anyhow::{Context, Result};
 use dotenv::dotenv;
-use event_system::EventSystem;
-use server_wallet_manager::ServerWalletManager;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::signer::Signer;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{env, sync::Arc};
 use tokio::signal;
 use trading_common::database::SupabaseClient;
+use trading_common::event_system::EventSystem;
+use trading_common::server_wallet_manager::ServerWalletManager;
 use wallet_monitor::WalletMonitor;
 
 #[tokio::main]

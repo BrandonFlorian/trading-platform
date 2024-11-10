@@ -5,6 +5,7 @@ use axum::{
 };
 use serde_json::json;
 use trading_common::{
+    data::get_server_keypair,
     error::AppError,
     models::{BuyRequest, BuyResponse, SellRequest, SellResponse},
     pumpdotfun::{buy::process_buy_request, sell::process_sell_request},
@@ -12,7 +13,6 @@ use trading_common::{
         buy::process_buy_request as process_raydium_buy,
         sell::process_sell_request as process_raydium_sell,
     },
-    utils::get_server_keypair,
     CopyTradeSettings, TrackedWallet, TransactionLog,
 };
 use uuid::Uuid;

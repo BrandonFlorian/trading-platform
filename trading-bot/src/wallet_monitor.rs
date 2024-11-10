@@ -1,29 +1,21 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
-use solana_client::{rpc_client::RpcClient, rpc_config::RpcTransactionConfig};
-use solana_sdk::{
-    pubkey::Pubkey,
-    signature::{Keypair, Signature},
-    signer::Signer,
-};
-use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding};
-use std::str::FromStr;
+use parking_lot::{Mutex, RwLock};
+use serde_json::json;
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::{signature::Keypair, signer::Signer};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use trading_common::utils::{get_account_keys_from_message, get_metadata, get_server_keypair};
-
-use crate::{event_system::EventSystem, server_wallet_manager::ServerWalletManager};
-use parking_lot::{Mutex, RwLock};
+use trading_common::{data::get_server_keypair, event_system::EventSystem};
 use trading_common::{
     database::SupabaseClient,
-    models::{
-        BuyRequest, ClientTxInfo, CopyTradeSettings, SellRequest, TrackedWallet,
-        TrackedWalletNotification, TransactionType,
+    models::{ClientTxInfo, CopyTradeSettings, TrackedWallet, TrackedWalletNotification},
+    server_wallet_manager::ServerWalletManager,
+    utils::{
+        copy_trade::{execute_copy_trade, should_copy_trade},
+        transaction::process_websocket_message,
     },
-    pumpdotfun::{process_buy_request, process_sell_request},
-    utils::get_token_balance,
 };
 
 #[derive(Clone)]
@@ -220,12 +212,11 @@ impl WalletMonitor {
             println!("Copy trading enabled: {}", settings.is_enabled);
 
             if settings.is_enabled
-                && Self::should_copy_trade(&client_message, settings, server_wallet_manager).await?
+                && should_copy_trade(&client_message, settings, server_wallet_manager).await?
             {
                 println!("Executing copy trade");
                 let result =
-                    Self::execute_copy_trade(rpc_client, server_keypair, &client_message, settings)
-                        .await;
+                    execute_copy_trade(rpc_client, server_keypair, &client_message, settings).await;
 
                 match result {
                     Ok(()) => {
@@ -330,7 +321,7 @@ impl WalletMonitor {
                                 Some(msg) = read.next() => {
                                     match msg {
                                         Ok(Message::Text(text)) => {
-                                            match Self::process_websocket_message(&text, &rpc_client).await {
+                                            match process_websocket_message(&text, &rpc_client).await {
                                                 Ok(Some(tx_info)) => {
                                                     println!("Successfully processed transaction: {}", tx_info.signature);
                                                     let _ = message_queue.send(tx_info);
@@ -362,302 +353,6 @@ impl WalletMonitor {
         });
 
         Ok(handle)
-    }
-
-    async fn process_websocket_message(
-        text: &str,
-        rpc_client: &Arc<RpcClient>,
-    ) -> Result<Option<ClientTxInfo>> {
-        println!("Processing websocket message");
-        let value: Value = serde_json::from_str(text)?;
-        println!("Raw message: {}", text);
-
-        // Check for error in json_data
-        if value.get("error").is_some() {
-            println!("Received error message from RPC");
-            return Ok(None);
-        }
-
-        let result = match value.get("params").and_then(|p| p.get("result")) {
-            Some(r) => r,
-            None => {
-                println!("No result in message (subscription confirmation)");
-                return Ok(None);
-            }
-        };
-
-        let signature = match result
-            .get("value")
-            .and_then(|v| v.get("signature"))
-            .and_then(|s| s.as_str())
-        {
-            Some(s) => s.to_string(),
-            None => {
-                println!("No signature found");
-                return Ok(None);
-            }
-        };
-
-        // Configure transaction fetch
-        let config = RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::JsonParsed),
-            commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
-            max_supported_transaction_version: Some(0),
-        };
-
-        // Fetch full transaction with retries
-        let signature_obj = Signature::from_str(&signature)?;
-        let mut retries = 20;
-        let mut transaction_data = None;
-
-        while retries > 0 {
-            match rpc_client.get_transaction_with_config(&signature_obj, config) {
-                Ok(data) => {
-                    transaction_data = Some(data);
-                    break;
-                }
-                Err(e) => {
-                    println!(
-                        "Error fetching transaction {} (retry {}): {}",
-                        signature,
-                        21 - retries,
-                        e
-                    );
-                    retries -= 1;
-                    if retries > 0 {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                }
-            }
-        }
-
-        let transaction_data = match transaction_data {
-            Some(data) => data,
-            None => {
-                println!("Failed to fetch transaction data after retries");
-                return Ok(None);
-            }
-        };
-
-        // Process the transaction data to create ClientTxInfo
-        Self::create_client_tx_info(&transaction_data, &signature, rpc_client).await
-    }
-
-    async fn create_client_tx_info(
-        transaction_data: &EncodedConfirmedTransactionWithStatusMeta,
-        signature: &str,
-        rpc_client: &Arc<RpcClient>,
-    ) -> Result<Option<ClientTxInfo>> {
-        // Get the meta data
-        let meta = match &transaction_data.transaction.meta {
-            Some(meta) => meta,
-            None => {
-                println!("No meta data in transaction");
-                return Ok(None);
-            }
-        };
-
-        // Create longer-lived empty vectors
-        let empty_token_balances = Vec::new();
-        let empty_logs = Vec::new();
-
-        // Extract token balances with proper lifetimes
-        let pre_balances = meta
-            .pre_token_balances
-            .as_ref()
-            .unwrap_or(&empty_token_balances);
-        let post_balances = meta
-            .post_token_balances
-            .as_ref()
-            .unwrap_or(&empty_token_balances);
-
-        // Get token info
-        let token_address = match post_balances.first() {
-            Some(balance) => balance.mint.clone(),
-            None => {
-                println!("No token balance information");
-                return Ok(None);
-            }
-        };
-
-        // Calculate token amount change
-        let pre_amount = pre_balances
-            .first()
-            .and_then(|b| b.ui_token_amount.ui_amount)
-            .unwrap_or(0.0);
-        let post_amount = post_balances
-            .first()
-            .and_then(|b| b.ui_token_amount.ui_amount)
-            .unwrap_or(0.0);
-        let amount_token = (post_amount - pre_amount).abs();
-
-        // Calculate SOL amount change
-        let pre_sol = meta.pre_balances.first().copied().unwrap_or(0);
-        let post_sol = meta.post_balances.first().copied().unwrap_or(0);
-        let amount_sol = ((post_sol as i64 - pre_sol as i64).abs() as f64) / 1e9;
-
-        // Get transaction logs and determine type using the longer-lived empty vector
-        let logs = meta.log_messages.as_ref().unwrap_or(&empty_logs);
-        let transaction_type = if logs.iter().any(|log| log.contains("Instruction: Buy")) {
-            TransactionType::Buy
-        } else if logs.iter().any(|log| log.contains("Instruction: Sell")) {
-            TransactionType::Sell
-        } else {
-            TransactionType::Unknown
-        };
-
-        // Get token metadata
-        let token_pubkey = Pubkey::from_str(&token_address)?;
-        let token_metadata = get_metadata(rpc_client, &token_pubkey).await?;
-
-        // Get account keys
-        let (seller, buyer) = match &transaction_data.transaction.transaction {
-            solana_transaction_status::EncodedTransaction::Json(tx) => {
-                let account_keys = get_account_keys_from_message(&tx.message);
-
-                match transaction_type {
-                    TransactionType::Sell => (
-                        account_keys.first().cloned().unwrap_or_default(),
-                        account_keys.get(1).cloned().unwrap_or_default(),
-                    ),
-                    TransactionType::Buy => (
-                        account_keys.get(1).cloned().unwrap_or_default(),
-                        account_keys.first().cloned().unwrap_or_default(),
-                    ),
-                    _ => (String::new(), String::new()),
-                }
-            }
-            _ => (String::new(), String::new()),
-        };
-
-        Ok(Some(ClientTxInfo {
-            signature: signature.to_string(),
-            token_address,
-            token_name: token_metadata.name,
-            token_symbol: token_metadata.symbol,
-            transaction_type,
-            amount_token,
-            amount_sol,
-            price_per_token: if amount_token > 0.0 {
-                amount_sol / amount_token
-            } else {
-                0.0
-            },
-            token_image_uri: token_metadata.uri,
-            market_cap: 0.0,
-            usd_market_cap: 0.0,
-            timestamp: transaction_data.block_time.unwrap_or(0),
-            seller,
-            buyer,
-        }))
-    }
-
-    async fn should_copy_trade(
-        tx_info: &ClientTxInfo,
-        settings: &CopyTradeSettings,
-        server_wallet_manager: &Arc<tokio::sync::Mutex<ServerWalletManager>>,
-    ) -> Result<bool> {
-        // Token allowlist check
-        if settings.use_allowed_tokens_list {
-            if let Some(allowed_tokens) = &settings.allowed_tokens {
-                if !allowed_tokens.contains(&tx_info.token_address) {
-                    println!("Token not in allowed list: {}", tx_info.token_address);
-                    return Ok(false);
-                }
-            }
-        }
-
-        match tx_info.transaction_type {
-            TransactionType::Buy => {
-                // Check if the current number of open positions is less than max allowed
-                let wallet_manager = Arc::clone(server_wallet_manager);
-                let manager = wallet_manager.lock().await;
-                let current_positions = manager.get_tokens().len();
-
-                if current_positions >= settings.max_open_positions as usize {
-                    println!(
-                        "Maximum open positions reached: Current {} of {}",
-                        current_positions, settings.max_open_positions
-                    );
-                    return Ok(false);
-                }
-
-                if !settings.allow_additional_buys {
-                    // Check if we already hold this token
-                    if manager.get_tokens().contains_key(&tx_info.token_address) {
-                        println!("Additional buys not allowed and token already held");
-                        return Ok(false);
-                    }
-                }
-            }
-            TransactionType::Sell => {
-                // Sell-specific validation goes here
-            }
-            _ => return Ok(false),
-        }
-
-        Ok(true)
-    }
-
-    async fn execute_copy_trade(
-        rpc_client: &Arc<RpcClient>,
-        server_keypair: &Keypair,
-        tx_info: &ClientTxInfo,
-        settings: &CopyTradeSettings,
-    ) -> Result<()> {
-        match tx_info.transaction_type {
-            TransactionType::Buy => {
-                let request = BuyRequest {
-                    token_address: tx_info.token_address.clone(),
-                    sol_quantity: settings.trade_amount_sol,
-                    slippage_tolerance: settings.max_slippage,
-                };
-
-                let response = process_buy_request(rpc_client, server_keypair, request).await?;
-                if response.success {
-                    println!("Copy trade buy executed: {}", response.signature);
-                }
-            }
-            TransactionType::Sell => {
-                println!("Preparing to execute copy trade sell");
-                let token_mint = Pubkey::from_str(&tx_info.token_address)?;
-
-                // Get the associated token account for our wallet
-                let token_account = spl_associated_token_account::get_associated_token_address(
-                    &server_keypair.pubkey(),
-                    &token_mint,
-                );
-
-                println!("Using token account: {}", token_account);
-                let token_balance = get_token_balance(rpc_client, &token_account).await?;
-                println!(
-                    "Found token balance to sell: {} {}",
-                    token_balance, tx_info.token_symbol
-                );
-                println!("Using max slippage: {}%", settings.max_slippage * 100.0);
-
-                let request = SellRequest {
-                    token_address: tx_info.token_address.clone(),
-                    token_quantity: token_balance,
-                    slippage_tolerance: settings.max_slippage,
-                };
-
-                println!("Executing sell request...");
-                let response = process_sell_request(rpc_client, server_keypair, request).await?;
-                if response.success {
-                    println!("Copy trade sell executed successfully:");
-                    println!("  Signature: {}", response.signature);
-                    println!(
-                        "  Amount sold: {} {}",
-                        response.token_quantity, tx_info.token_symbol
-                    );
-                    println!("  SOL received: {} SOL", response.sol_received);
-                }
-            }
-            _ => {}
-        }
-
-        Ok(())
     }
 
     async fn fetch_tracked_wallets(supabase_client: &SupabaseClient) -> Result<Vec<TrackedWallet>> {
