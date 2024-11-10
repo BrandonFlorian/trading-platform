@@ -98,7 +98,7 @@ impl ServerWalletManager {
                         balance: format_balance(format_token_amount(balance, decimals), decimals),
                         metadata_uri: Some(metadata.uri),
                         decimals,
-                        market_cap: 0.0, // Updated via external price feed if needed
+                        market_cap: 0.0,
                     },
                 );
             }
@@ -180,7 +180,7 @@ impl ServerWalletManager {
                 self.update_token_balance(
                     &tx_info.token_address,
                     tx_info.amount_token,
-                    9, // Most Solana tokens use 9 decimals
+                    9, // Need to make this dynamic
                     Some(HashMap::from([
                         ("name".to_string(), tx_info.token_name.clone()),
                         ("symbol".to_string(), tx_info.token_symbol.clone()),

@@ -10,40 +10,33 @@ use solana_sdk::{
 use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding};
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
-use tokio::{net::TcpStream, sync::mpsc};
-use tokio_tungstenite::WebSocketStream;
+use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use trading_common::utils::{get_account_keys_from_message, get_metadata, get_server_keypair};
 
-use crate::{
-    event_system::EventSystem,
-    server_wallet_manager::{ServerWalletManager, TokenInfo},
-};
+use crate::{event_system::EventSystem, server_wallet_manager::ServerWalletManager};
+use parking_lot::{Mutex, RwLock};
 use trading_common::{
-    constants::PUMP_FUN_PROGRAM_ID,
     database::SupabaseClient,
     models::{
         BuyRequest, ClientTxInfo, CopyTradeSettings, SellRequest, TrackedWallet,
-        TrackedWalletNotification, TransactionLog, TransactionType,
+        TrackedWalletNotification, TransactionType,
     },
     pumpdotfun::{process_buy_request, process_sell_request},
     utils::get_token_balance,
 };
 
+#[derive(Clone)]
 pub struct WalletMonitor {
     rpc_client: Arc<RpcClient>,
     ws_url: String,
-    supabase_client: SupabaseClient,
-    server_keypair: Keypair,
-    tracked_wallets: Option<Vec<TrackedWallet>>,
-    copy_trade_settings: Option<Vec<CopyTradeSettings>>,
-    tx_sender: mpsc::Sender<TransactionLog>,
+    tracked_wallets: Arc<RwLock<Option<Vec<TrackedWallet>>>>,
+    copy_trade_settings: Arc<RwLock<Option<Vec<CopyTradeSettings>>>>,
     event_system: Arc<EventSystem>,
     message_queue: mpsc::UnboundedSender<ClientTxInfo>,
-    message_receiver: Option<mpsc::UnboundedReceiver<ClientTxInfo>>,
-    ws_connection: Option<WebSocketStream<TcpStream>>,
-    stop_signal: tokio::sync::watch::Sender<bool>,
-    stop_receiver: tokio::sync::watch::Receiver<bool>,
+    message_receiver: Arc<Mutex<Option<mpsc::UnboundedReceiver<ClientTxInfo>>>>,
+    stop_signal: Arc<tokio::sync::watch::Sender<bool>>,
+    stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
     server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
 }
 
@@ -53,7 +46,6 @@ impl WalletMonitor {
         ws_url: String,
         supabase_client: SupabaseClient,
         server_keypair: Keypair,
-        tx_sender: mpsc::Sender<TransactionLog>,
         event_system: Arc<EventSystem>,
         server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
     ) -> Result<Self> {
@@ -61,10 +53,10 @@ impl WalletMonitor {
         println!("Initializing WalletMonitor for user: {}", user_id);
 
         let exists = supabase_client.user_exists(&user_id).await?;
-        println!("User exists check result: {}", exists); // Add debug print
+        println!("User exists check result: {}", exists);
 
         if !exists {
-            println!("Creating new user in database"); // Add debug print
+            println!("Creating new user in database");
             match supabase_client.create_user(&user_id).await {
                 Ok(uuid) => println!("Created user with UUID: {}", uuid),
                 Err(e) => println!("Error creating user: {}", e),
@@ -83,17 +75,13 @@ impl WalletMonitor {
         Ok(Self {
             rpc_client,
             ws_url,
-            supabase_client,
-            server_keypair,
-            tracked_wallets: Some(tracked_wallets),
-            copy_trade_settings: Some(copy_trade_settings),
-            tx_sender,
+            tracked_wallets: Arc::new(RwLock::new(Some(tracked_wallets))),
+            copy_trade_settings: Arc::new(RwLock::new(Some(copy_trade_settings))),
             event_system,
             message_queue: tx,
-            message_receiver: Some(rx),
-            ws_connection: None,
-            stop_signal: stop_tx,
-            stop_receiver: stop_rx,
+            message_receiver: Arc::new(Mutex::new(Some(rx))),
+            stop_signal: Arc::new(stop_tx),
+            stop_receiver: Arc::new(stop_rx),
             server_wallet_manager,
         })
     }
@@ -112,11 +100,11 @@ impl WalletMonitor {
         println!("WalletMonitor started successfully. Waiting for tasks...");
 
         // Wait for both tasks to complete or stop signal
-        let mut stop_rx = self.stop_receiver.clone();
+        let mut rx = (*self.stop_receiver).clone();
         loop {
             tokio::select! {
-                _ = stop_rx.changed() => {
-                    if *stop_rx.borrow() {
+                result = rx.changed() => {
+                    if result.is_ok() && *rx.borrow() {
                         println!("Stop signal received, shutting down...");
                         break;
                     }
@@ -148,12 +136,13 @@ impl WalletMonitor {
     async fn start_message_processor(&mut self) -> Result<tokio::task::JoinHandle<()>> {
         let mut rx = self
             .message_receiver
+            .lock()
             .take()
             .ok_or_else(|| anyhow::anyhow!("Message receiver not available"))?;
         let event_system = self.event_system.clone();
         let rpc_client = self.rpc_client.clone();
         let server_wallet_manager = self.server_wallet_manager.clone();
-        let mut stop_rx = self.stop_receiver.clone();
+        let stop_rx = self.stop_receiver.clone();
         let copy_trade_settings = self.copy_trade_settings.clone();
         let server_keypair = get_server_keypair();
 
@@ -168,12 +157,14 @@ impl WalletMonitor {
                 tokio::select! {
                     Some(client_message) = rx.recv() => {
                         println!("Processing message: {}", client_message.signature);
+                        // Get settings within this scope
+                        let settings = copy_trade_settings.read().clone();
                         if let Err(e) = Self::handle_transaction(
                             &rpc_client,
                             &server_keypair,
                             &event_system,
                             &server_wallet_manager,
-                            &copy_trade_settings,
+                            &settings,
                             client_message,
                         ).await {
                             println!("Error processing transaction: {}", e);
@@ -260,7 +251,7 @@ impl WalletMonitor {
     async fn start_websocket_monitor(&mut self) -> Result<tokio::task::JoinHandle<()>> {
         let ws_url = self.ws_url.clone();
         let message_queue = self.message_queue.clone();
-        let mut stop_rx = self.stop_receiver.clone();
+        let stop_rx = self.stop_receiver.clone();
         let tracked_wallets = self.tracked_wallets.clone();
         let rpc_client = self.rpc_client.clone();
 
@@ -278,42 +269,53 @@ impl WalletMonitor {
 
                 let reconnect_delay = BASE_RECONNECT_DELAY * (1 << consecutive_errors.min(3));
 
+                // Collect wallet addresses before websocket connection
+                let wallet_addresses = {
+                    let wallets = tracked_wallets.read();
+                    wallets
+                        .as_ref()
+                        .map(|w| {
+                            w.iter()
+                                .map(|wallet| wallet.wallet_address.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                };
+
+                if wallet_addresses.is_empty() {
+                    println!("No tracked wallets found");
+                    tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
+                    continue;
+                }
+
                 match connect_async(&ws_url).await {
                     Ok((ws_stream, _)) => {
                         consecutive_errors = 0;
                         let (mut write, mut read) = ws_stream.split();
 
                         // Subscribe to tracked wallets
-                        if let Some(wallets) = &tracked_wallets {
-                            for (index, wallet) in wallets.iter().enumerate() {
-                                let subscribe_msg = json!({
-                                    "jsonrpc": "2.0",
-                                    "id": index + 1,
-                                    "method": "logsSubscribe",
-                                    "params": [
-                                        {"mentions": [wallet.wallet_address]},
-                                        {"commitment": "confirmed"}
-                                    ]
-                                });
+                        for (index, wallet_address) in wallet_addresses.iter().enumerate() {
+                            let subscribe_msg = json!({
+                                "jsonrpc": "2.0",
+                                "id": index + 1,
+                                "method": "logsSubscribe",
+                                "params": [
+                                    {"mentions": [wallet_address]},
+                                    {"commitment": "confirmed"}
+                                ]
+                            });
 
-                                match write.send(Message::Text(subscribe_msg.to_string())).await {
-                                    Ok(_) => {
-                                        println!("Subscribed to wallet: {}", wallet.wallet_address)
-                                    }
-                                    Err(e) => {
-                                        println!("Error subscribing to wallet: {}", e);
-                                        consecutive_errors += 1;
-                                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                            println!(
-                                                "Too many consecutive errors, waiting longer..."
-                                            );
-                                            tokio::time::sleep(Duration::from_secs(
-                                                reconnect_delay,
-                                            ))
+                            match write.send(Message::Text(subscribe_msg.to_string())).await {
+                                Ok(_) => println!("Subscribed to wallet: {}", wallet_address),
+                                Err(e) => {
+                                    println!("Error subscribing to wallet: {}", e);
+                                    consecutive_errors += 1;
+                                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                        println!("Too many consecutive errors, waiting longer...");
+                                        tokio::time::sleep(Duration::from_secs(reconnect_delay))
                                             .await;
-                                        }
-                                        continue 'outer;
                                     }
+                                    continue 'outer;
                                 }
                             }
                         }
@@ -568,7 +570,7 @@ impl WalletMonitor {
         match tx_info.transaction_type {
             TransactionType::Buy => {
                 // Check if the current number of open positions is less than max allowed
-                let wallet_manager = Arc::clone(&server_wallet_manager);
+                let wallet_manager = Arc::clone(server_wallet_manager);
                 let manager = wallet_manager.lock().await;
                 let current_positions = manager.get_tokens().len();
 
