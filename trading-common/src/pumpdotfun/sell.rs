@@ -201,7 +201,7 @@ pub async fn process_sell_request(
     // Create containers
     let pump_fun_token_container = PumpFunTokenContainer {
         mint_address: token_address,
-        pump_fun_coin_data: None, // No longer need API data
+        pump_fun_coin_data: None,
         program_account_info: None,
     };
 
@@ -231,7 +231,7 @@ pub async fn process_sell_request(
     let bonding_curve_data = get_bonding_curve_data(rpc_client, &token_address).await?;
     let (_, expected_sol_output) = bonding_curve_data.calculate_sell_amount(
         request.token_quantity,
-        9, // Most Solana tokens use 9 decimals
+        9, // Need to get decimals from chain
     );
 
     let signature = sell(

@@ -99,15 +99,15 @@ pub async fn get_pool_keys(pool_id: &str) -> Result<RaydiumPoolKeyInfo, AppError
     let _ = Pubkey::from_str(&pool_info.market_authority)?;
     let _ = Pubkey::from_str(&pool_info.open_orders)?;
     let _ = Pubkey::from_str(&pool_info.target_orders)?;
-    let _ = Pubkey::from_str(&pool_info.vault.A)?;
-    let _ = Pubkey::from_str(&pool_info.vault.B)?;
+    let _ = Pubkey::from_str(&pool_info.vault.a)?;
+    let _ = Pubkey::from_str(&pool_info.vault.b)?;
 
     println!("Pool keys validated for pool {}", pool_id);
     println!("Market ID: {}", pool_info.market_id);
     println!("Market Authority: {}", pool_info.market_authority);
     println!("OpenOrders: {}", pool_info.open_orders);
-    println!("Base Vault: {}", pool_info.vault.A);
-    println!("Quote Vault: {}", pool_info.vault.B);
+    println!("Base Vault: {}", pool_info.vault.a);
+    println!("Quote Vault: {}", pool_info.vault.b);
 
     Ok(api_response.data[0].clone())
 }

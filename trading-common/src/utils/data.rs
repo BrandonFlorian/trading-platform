@@ -107,7 +107,7 @@ pub fn format_token_amount(amount: u64, decimals: u8) -> f64 {
     (amount as f64) / 10f64.powi(decimals as i32)
 }
 
-pub fn format_balance(balance: f64, decimals: u8) -> String {
+pub fn format_balance(balance: f64, _decimals: u8) -> String {
     if balance == 0.0 {
         "0".to_string()
     } else if balance < 0.000001 {

@@ -48,3 +48,9 @@ impl EventSystem {
         self.emit(Event::WalletUpdate(notification));
     }
 }
+
+impl Default for EventSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}

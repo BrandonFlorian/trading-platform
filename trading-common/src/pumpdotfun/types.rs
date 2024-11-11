@@ -117,7 +117,7 @@ impl PumpFunCalcResult {
         virtual_sol_reserves: i64,
         sol_quantity: f64,
         slippage: f64,
-        decimals: u8,
+        _decimals: u8,
     ) -> Self {
         let vtokenr = virtual_token_reserves as f64;
         let vsolr = virtual_sol_reserves as f64;

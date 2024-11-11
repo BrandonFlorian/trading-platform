@@ -27,7 +27,7 @@ pub struct TokenInfo {
 
 pub struct ServerWalletManager {
     rpc_client: Arc<RpcClient>,
-    http_client: Client,
+    _http_client: Client,
     public_key: Pubkey,
     balance: f64,
     tokens: HashMap<String, TokenInfo>,
@@ -42,7 +42,7 @@ impl ServerWalletManager {
     ) -> Result<Self> {
         let mut manager = Self {
             rpc_client,
-            http_client: Client::new(),
+            _http_client: Client::new(),
             public_key,
             balance: 0.0,
             tokens: HashMap::new(),
