@@ -64,7 +64,7 @@ pub async fn execute_copy_trade(
     server_keypair: &Keypair,
     tx_info: &ClientTxInfo,
     settings: &CopyTradeSettings,
-    dex_type: DexType, // Add this parameter
+    dex_type: DexType,
 ) -> Result<()> {
     match tx_info.transaction_type {
         TransactionType::Buy => {

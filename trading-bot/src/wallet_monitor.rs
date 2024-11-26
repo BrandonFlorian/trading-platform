@@ -221,7 +221,7 @@ impl WalletMonitor {
                     server_keypair,
                     &client_message,
                     settings,
-                    client_message.dex_type.clone(), // Clone here
+                    client_message.dex_type.clone(),
                 )
                 .await;
 
