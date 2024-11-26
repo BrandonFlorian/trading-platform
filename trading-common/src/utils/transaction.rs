@@ -6,10 +6,11 @@ use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTra
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 
-use crate::{
-    data::{get_account_keys_from_message, get_metadata},
-    ClientTxInfo, TransactionType,
-};
+use crate::pumpdotfun;
+use crate::raydium;
+use crate::{data::get_metadata, ClientTxInfo, TransactionType};
+
+use super::dex::{DexTransaction, DexType};
 
 pub async fn process_websocket_message(
     text: &str,
@@ -95,86 +96,33 @@ pub async fn create_client_tx_info(
     signature: &str,
     rpc_client: &Arc<RpcClient>,
 ) -> Result<Option<ClientTxInfo>> {
-    // Get the meta data
-    let meta = match &transaction_data.transaction.meta {
-        Some(meta) => meta,
-        None => {
-            println!("No meta data in transaction");
-            return Ok(None);
-        }
-    };
+    // Detect DEX and extract transaction details
+    let dex_type = DexTransaction::detect_dex_type(transaction_data);
 
-    // Create longer-lived empty vectors
-    let empty_token_balances = Vec::new();
-    let empty_logs = Vec::new();
+    let (transaction_type, token_address, amount_token, amount_sol, price_per_token) =
+        match dex_type {
+            DexType::PumpFun => crate::pumpdotfun::extract_transaction_details(transaction_data)?,
+            DexType::Raydium => crate::raydium::extract_transaction_details(transaction_data)?,
+            DexType::Unknown => return Ok(None),
+        };
 
-    // Extract token balances with proper lifetimes
-    let pre_balances = meta
-        .pre_token_balances
-        .as_ref()
-        .unwrap_or(&empty_token_balances);
-    let post_balances = meta
-        .post_token_balances
-        .as_ref()
-        .unwrap_or(&empty_token_balances);
-
-    // Get token info
-    let token_address = match post_balances.first() {
-        Some(balance) => balance.mint.clone(),
-        None => {
-            println!("No token balance information");
-            return Ok(None);
-        }
-    };
-
-    // Calculate token amount change
-    let pre_amount = pre_balances
-        .first()
-        .and_then(|b| b.ui_token_amount.ui_amount)
-        .unwrap_or(0.0);
-    let post_amount = post_balances
-        .first()
-        .and_then(|b| b.ui_token_amount.ui_amount)
-        .unwrap_or(0.0);
-    let amount_token = (post_amount - pre_amount).abs();
-
-    // Calculate SOL amount change
-    let pre_sol = meta.pre_balances.first().copied().unwrap_or(0);
-    let post_sol = meta.post_balances.first().copied().unwrap_or(0);
-    let amount_sol = ((post_sol as i64 - pre_sol as i64).abs() as f64) / 1e9;
-
-    // Get transaction logs and determine type using the longer-lived empty vector
-    let logs = meta.log_messages.as_ref().unwrap_or(&empty_logs);
-    let transaction_type = if logs.iter().any(|log| log.contains("Instruction: Buy")) {
-        TransactionType::Buy
-    } else if logs.iter().any(|log| log.contains("Instruction: Sell")) {
-        TransactionType::Sell
-    } else {
-        TransactionType::Unknown
-    };
+    if transaction_type == TransactionType::Unknown {
+        return Ok(None);
+    }
 
     // Get token metadata
     let token_pubkey = Pubkey::from_str(&token_address)?;
     let token_metadata = get_metadata(rpc_client, &token_pubkey).await?;
 
-    // Get account keys
-    let (seller, buyer) = match &transaction_data.transaction.transaction {
-        solana_transaction_status::EncodedTransaction::Json(tx) => {
-            let account_keys = get_account_keys_from_message(&tx.message);
-
-            match transaction_type {
-                TransactionType::Sell => (
-                    account_keys.first().cloned().unwrap_or_default(),
-                    account_keys.get(1).cloned().unwrap_or_default(),
-                ),
-                TransactionType::Buy => (
-                    account_keys.get(1).cloned().unwrap_or_default(),
-                    account_keys.first().cloned().unwrap_or_default(),
-                ),
-                _ => (String::new(), String::new()),
-            }
+    // Get buyer/seller based on DEX type
+    let (seller, buyer) = match dex_type {
+        DexType::PumpFun => {
+            pumpdotfun::transaction::extract_accounts(transaction_data, &transaction_type)?
         }
-        _ => (String::new(), String::new()),
+        DexType::Raydium => {
+            raydium::transaction::extract_accounts(transaction_data, &transaction_type)?
+        }
+        DexType::Unknown => (String::new(), String::new()),
     };
 
     Ok(Some(ClientTxInfo {
@@ -185,16 +133,13 @@ pub async fn create_client_tx_info(
         transaction_type,
         amount_token,
         amount_sol,
-        price_per_token: if amount_token > 0.0 {
-            amount_sol / amount_token
-        } else {
-            0.0
-        },
+        price_per_token,
         token_image_uri: token_metadata.uri,
         market_cap: 0.0,
         usd_market_cap: 0.0,
         timestamp: transaction_data.block_time.unwrap_or(0),
         seller,
         buyer,
+        dex_type,
     }))
 }

@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::dex::DexType;
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum TransactionType {
     Buy,
@@ -26,6 +28,7 @@ pub struct ClientTxInfo {
     pub timestamp: i64,
     pub seller: String,
     pub buyer: String,
+    pub dex_type: DexType,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

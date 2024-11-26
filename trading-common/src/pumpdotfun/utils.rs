@@ -2,13 +2,14 @@ use anyhow::Result;
 use borsh::BorshDeserialize;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
 use std::str::FromStr;
 
 use super::{
     types::{PumpFunCoinData, PumpFunTokenContainer},
     BondingCurveData, BONDING_CURVE_MARGIN_OF_ERROR, PUMP_FUN_PROGRAM_ID,
 };
-use crate::error::AppError;
+use crate::{data::get_account_keys_from_message, error::AppError};
 
 pub async fn get_bonding_curve_data(
     rpc_client: &RpcClient,
@@ -141,5 +142,20 @@ pub async fn ensure_token_account(
             rpc_client.send_and_confirm_transaction(&create_ata_tx)?;
             Ok(token_account)
         }
+    }
+}
+
+pub fn get_transaction_accounts(
+    transaction: &EncodedConfirmedTransactionWithStatusMeta,
+) -> Option<(String, String)> {
+    match &transaction.transaction.transaction {
+        solana_transaction_status::EncodedTransaction::Json(tx) => {
+            let account_keys = get_account_keys_from_message(&tx.message);
+            Some((
+                account_keys.first().cloned().unwrap_or_default(),
+                account_keys.get(1).cloned().unwrap_or_default(),
+            ))
+        }
+        _ => None,
     }
 }

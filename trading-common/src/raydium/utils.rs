@@ -8,9 +8,10 @@ use solana_sdk::{
     signer::Signer,
     transaction::Transaction,
 };
+use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
 use std::str::FromStr;
 
-use crate::error::AppError;
+use crate::{error::AppError, TransactionType};
 
 use super::{
     types::{
@@ -99,15 +100,15 @@ pub async fn get_pool_keys(pool_id: &str) -> Result<RaydiumPoolKeyInfo, AppError
     let _ = Pubkey::from_str(&pool_info.market_authority)?;
     let _ = Pubkey::from_str(&pool_info.open_orders)?;
     let _ = Pubkey::from_str(&pool_info.target_orders)?;
-    let _ = Pubkey::from_str(&pool_info.vault.a)?;
-    let _ = Pubkey::from_str(&pool_info.vault.b)?;
+    let _ = Pubkey::from_str(&pool_info.vault.A)?;
+    let _ = Pubkey::from_str(&pool_info.vault.B)?;
 
     println!("Pool keys validated for pool {}", pool_id);
     println!("Market ID: {}", pool_info.market_id);
     println!("Market Authority: {}", pool_info.market_authority);
     println!("OpenOrders: {}", pool_info.open_orders);
-    println!("Base Vault: {}", pool_info.vault.a);
-    println!("Quote Vault: {}", pool_info.vault.b);
+    println!("Base Vault: {}", pool_info.vault.A);
+    println!("Quote Vault: {}", pool_info.vault.B);
 
     Ok(api_response.data[0].clone())
 }
@@ -264,4 +265,31 @@ pub async fn get_token_balance(
         .map_err(|_| AppError::BadRequest("Failed to get token balance".to_string()))?;
 
     Ok(account_balance.ui_amount.unwrap_or(0.0))
+}
+
+pub fn extract_accounts(
+    transaction: &EncodedConfirmedTransactionWithStatusMeta,
+    transaction_type: &TransactionType,
+) -> Result<(String, String)> {
+    match &transaction.transaction.transaction {
+        solana_transaction_status::EncodedTransaction::Json(tx) => {
+            let account_keys = crate::data::get_account_keys_from_message(&tx.message);
+
+            // For Raydium, the account order might need verification
+            let (seller, buyer) = match transaction_type {
+                TransactionType::Sell => (
+                    account_keys.first().cloned().unwrap_or_default(),
+                    account_keys.get(1).cloned().unwrap_or_default(),
+                ),
+                TransactionType::Buy => (
+                    account_keys.get(1).cloned().unwrap_or_default(),
+                    account_keys.first().cloned().unwrap_or_default(),
+                ),
+                _ => (String::new(), String::new()),
+            };
+
+            Ok((seller, buyer))
+        }
+        _ => Ok((String::new(), String::new())),
+    }
 }

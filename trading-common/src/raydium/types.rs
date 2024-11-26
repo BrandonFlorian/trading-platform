@@ -192,8 +192,8 @@ pub struct RaydiumPoolKeyInfo {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VaultInfo {
-    pub a: String,
-    pub b: String,
+    pub A: String,
+    pub B: String,
 }
 
 impl From<RaydiumPool> for PoolKeys {
@@ -223,8 +223,8 @@ impl From<RaydiumPoolKeyInfo> for PoolKeys {
             id: Pubkey::from_str(&pool.id).unwrap(),
             base_mint: Pubkey::from_str(&pool.mint_a.address).unwrap(),
             quote_mint: Pubkey::from_str(&pool.mint_b.address).unwrap(),
-            base_vault: Pubkey::from_str(&pool.vault.a).unwrap(),
-            quote_vault: Pubkey::from_str(&pool.vault.b).unwrap(),
+            base_vault: Pubkey::from_str(&pool.vault.A).unwrap(),
+            quote_vault: Pubkey::from_str(&pool.vault.B).unwrap(),
             open_orders: Pubkey::from_str(&pool.open_orders).unwrap(),
             target_orders: Pubkey::from_str(&pool.target_orders).unwrap(),
             market_id: Pubkey::from_str(&pool.market_id).unwrap(),

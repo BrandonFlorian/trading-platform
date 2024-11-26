@@ -1,11 +1,14 @@
 use anyhow::Result;
 use solana_client::rpc_client::RpcClient;
+use solana_sdk::transaction::Transaction;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crate::dex::DexType;
 use crate::models::SellRequest;
-use crate::pumpdotfun::{process_buy_request, process_sell_request};
+use crate::pumpdotfun;
+use crate::raydium;
 use crate::utils::data::get_token_balance;
 use crate::wallet::server_wallet_manager::ServerWalletManager;
 use crate::{models::BuyRequest, ClientTxInfo, CopyTradeSettings, TransactionType};
@@ -61,6 +64,7 @@ pub async fn execute_copy_trade(
     server_keypair: &Keypair,
     tx_info: &ClientTxInfo,
     settings: &CopyTradeSettings,
+    dex_type: DexType, // Add this parameter
 ) -> Result<()> {
     match tx_info.transaction_type {
         TransactionType::Buy => {
@@ -70,20 +74,62 @@ pub async fn execute_copy_trade(
                 slippage_tolerance: settings.max_slippage,
             };
 
-            let response = process_buy_request(rpc_client, server_keypair, request).await?;
-            if response.success {
-                println!("Copy trade buy executed: {}", response.signature);
+            match dex_type {
+                DexType::PumpFun => {
+                    println!("Executing Pump.fun buy");
+                    let response =
+                        pumpdotfun::process_buy_request(rpc_client, server_keypair, request)
+                            .await?;
+                    if response.success {
+                        println!("Pump.fun copy trade buy executed: {}", response.signature);
+                    }
+                }
+                DexType::Raydium => {
+                    println!("Executing Raydium buy");
+                    let response =
+                        raydium::process_buy_request(rpc_client, server_keypair, &request).await?;
+                    if response.success {
+                        println!("Raydium copy trade buy executed: {}", response.signature);
+                    }
+                }
+                DexType::Unknown => {
+                    println!("Unknown DEX type, cannot execute buy");
+                    return Ok(());
+                }
             }
         }
         TransactionType::Sell => {
             println!("Preparing to execute copy trade sell");
             let token_mint = Pubkey::from_str(&tx_info.token_address)?;
 
-            // Get the associated token account for our wallet
+            // Create token account if needed
             let token_account = spl_associated_token_account::get_associated_token_address(
                 &server_keypair.pubkey(),
                 &token_mint,
             );
+
+            // Create ATA if it doesn't exist
+            if rpc_client.get_account(&token_account).is_err() {
+                println!("Creating token account for {}", tx_info.token_symbol);
+                let create_ata_ix =
+                    spl_associated_token_account::instruction::create_associated_token_account(
+                        &server_keypair.pubkey(),
+                        &server_keypair.pubkey(),
+                        &token_mint,
+                        &spl_token::id(),
+                    );
+
+                let recent_blockhash = rpc_client.get_latest_blockhash()?;
+                let create_ata_tx = Transaction::new_signed_with_payer(
+                    &[create_ata_ix],
+                    Some(&server_keypair.pubkey()),
+                    &[server_keypair],
+                    recent_blockhash,
+                );
+
+                rpc_client.send_and_confirm_transaction(&create_ata_tx)?;
+                println!("Token account created successfully");
+            }
 
             println!("Using token account: {}", token_account);
             let token_balance = get_token_balance(rpc_client, &token_account).await?;
@@ -93,22 +139,49 @@ pub async fn execute_copy_trade(
             );
             println!("Using max slippage: {}%", settings.max_slippage * 100.0);
 
-            let request = SellRequest {
-                token_address: tx_info.token_address.clone(),
-                token_quantity: token_balance,
-                slippage_tolerance: settings.max_slippage,
-            };
+            if token_balance > 0.0 {
+                let request = SellRequest {
+                    token_address: tx_info.token_address.clone(),
+                    token_quantity: token_balance,
+                    slippage_tolerance: settings.max_slippage,
+                };
 
-            println!("Executing sell request...");
-            let response = process_sell_request(rpc_client, server_keypair, request).await?;
-            if response.success {
-                println!("Copy trade sell executed successfully:");
-                println!("  Signature: {}", response.signature);
-                println!(
-                    "  Amount sold: {} {}",
-                    response.token_quantity, tx_info.token_symbol
-                );
-                println!("  SOL received: {} SOL", response.sol_received);
+                match dex_type {
+                    DexType::PumpFun => {
+                        println!("Executing Pump.fun sell");
+                        let response =
+                            pumpdotfun::process_sell_request(rpc_client, server_keypair, request)
+                                .await?;
+                        if response.success {
+                            println!("Pump.fun copy trade sell executed: {}", response.signature);
+                            println!(
+                                "  Amount sold: {} {}",
+                                response.token_quantity, tx_info.token_symbol
+                            );
+                            println!("  SOL received: {} SOL", response.sol_received);
+                        }
+                    }
+                    DexType::Raydium => {
+                        println!("Executing Raydium sell");
+                        let response =
+                            raydium::process_sell_request(rpc_client, server_keypair, &request)
+                                .await?;
+                        if response.success {
+                            println!("Raydium copy trade sell executed: {}", response.signature);
+                            println!(
+                                "  Amount sold: {} {}",
+                                response.token_quantity, tx_info.token_symbol
+                            );
+                            println!("  SOL received: {} SOL", response.sol_received);
+                        }
+                    }
+                    DexType::Unknown => {
+                        println!("Unknown DEX type, cannot execute sell");
+                        return Ok(());
+                    }
+                }
+            } else {
+                println!("No tokens to sell");
             }
         }
         _ => {}
