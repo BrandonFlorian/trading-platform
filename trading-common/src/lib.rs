@@ -7,6 +7,7 @@ pub mod raydium;
 pub mod utils {
     pub mod copy_trade;
     pub mod data;
+    pub mod dex;
     pub mod transaction;
 }
 pub mod wallet {

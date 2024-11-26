@@ -181,11 +181,12 @@ impl WalletMonitor {
         copy_trade_settings: &Option<Vec<CopyTradeSettings>>,
         client_message: ClientTxInfo,
     ) -> Result<()> {
+        println!("----------------------");
         println!("Handling transaction: {}", client_message.signature);
         println!("Transaction type: {:?}", client_message.transaction_type);
         println!(
-            "Token: {} ({})",
-            client_message.token_name, client_message.token_address
+            "Token: {} ({}) - {}",
+            client_message.token_name, client_message.token_symbol, client_message.token_address
         );
 
         println!("Transaction Details:");
@@ -197,26 +198,32 @@ impl WalletMonitor {
         println!("  Price per Token: {} SOL", client_message.price_per_token);
         println!("  Seller: {}", client_message.seller);
         println!("  Buyer: {}", client_message.buyer);
-
-        // Send tracked wallet notification
-        let notification = TrackedWalletNotification {
-            type_: "tracked_wallet_trade".to_string(),
-            data: client_message.clone(),
-        };
-        event_system.handle_tracked_wallet_trade(notification).await;
-        println!("Sent tracked wallet notification");
+        println!("  DEX Type: {:?}", client_message.dex_type);
 
         // Check copy trading settings
         if let Some(settings) = copy_trade_settings.as_ref().and_then(|s| s.first()) {
-            println!("Checking copy trade settings");
-            println!("Copy trading enabled: {}", settings.is_enabled);
+            println!("Copy trading settings found:");
+            println!("  Enabled: {}", settings.is_enabled);
+            println!("  Trade amount: {} SOL", settings.trade_amount_sol);
+            println!("  Max slippage: {}%", settings.max_slippage * 100.0);
+            println!("  Max open positions: {}", settings.max_open_positions);
+            println!(
+                "  Allow additional buys: {}",
+                settings.allow_additional_buys
+            );
 
             if settings.is_enabled
                 && should_copy_trade(&client_message, settings, server_wallet_manager).await?
             {
-                println!("Executing copy trade");
-                let result =
-                    execute_copy_trade(rpc_client, server_keypair, &client_message, settings).await;
+                println!("Executing copy trade for {:?}", client_message.dex_type);
+                let result = execute_copy_trade(
+                    rpc_client,
+                    server_keypair,
+                    &client_message,
+                    settings,
+                    client_message.dex_type.clone(), // Clone here
+                )
+                .await;
 
                 match result {
                     Ok(()) => {
@@ -230,11 +237,20 @@ impl WalletMonitor {
                     Err(e) => println!("Copy trade execution failed: {}", e),
                 }
             } else {
-                println!("Skipping copy trade due to settings or validation");
+                println!("Copy trade validation failed");
             }
         } else {
             println!("No copy trade settings found");
         }
+
+        // Send tracked wallet notification
+        let notification = TrackedWalletNotification {
+            type_: "tracked_wallet_trade".to_string(),
+            data: client_message,
+        };
+        event_system.handle_tracked_wallet_trade(notification).await;
+        println!("Sent tracked wallet notification");
+        println!("----------------------");
 
         Ok(())
     }
