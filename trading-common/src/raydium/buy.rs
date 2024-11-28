@@ -1,8 +1,9 @@
 use super::constants::*;
 use super::types::PoolKeys;
 use crate::{
-    data::confirm_transaction,
+    data::{confirm_transaction, get_token_balance},
     error::AppError,
+    extract_transaction_details,
     models::{BuyRequest, BuyResponse},
     raydium::{
         constants::{COMPUTE_BUDGET_PRICE, COMPUTE_BUDGET_UNITS, LAMPORTS_PER_SOL},
@@ -128,10 +129,27 @@ pub async fn process_buy_request(
     match confirm_transaction(rpc_client, &signature, 20, 3).await {
         Ok(true) => {
             println!("Transaction confirmed successfully");
+
+            // Get the transaction data to extract exact token amount received
+            let tx_data = rpc_client.get_transaction_with_config(
+                &signature,
+                solana_client::rpc_config::RpcTransactionConfig {
+                    encoding: Some(solana_transaction_status::UiTransactionEncoding::Json),
+                    commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
+                    max_supported_transaction_version: Some(0),
+                },
+            )?;
+
+            println!("Transaction data: {:?}", tx_data);
+
+            // Extract token amount from transaction data
+            let (_, _, amount_token, _, _) = extract_transaction_details(&tx_data)?;
+            println!("Tokens received from swap: {}", amount_token);
+
             Ok(BuyResponse {
                 success: true,
                 signature: signature.to_string(),
-                token_quantity: request.sol_quantity,
+                token_quantity: amount_token,
                 sol_spent: request.sol_quantity,
                 solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
                 error: None,
