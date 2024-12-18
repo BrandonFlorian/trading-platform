@@ -2,12 +2,12 @@
 members = [
     "trading-common",
     "trading-api",
-    "trading-bot"
+    "trading-bot",
 ]
 resolver = "2"
 [workspace.dependencies]
 tokio = { version = "1.41.1", features = ["full"] }
-tokio-tungstenite = { version = "0.24.0", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.25.0", features = ["native-tls"] }
 serde = { version = "1.0.214", features = ["derive"] }
 serde_json = "1.0.132"
 uuid = { version = "1.11.0", features = ["serde", "v4"] }
@@ -37,3 +37,7 @@ solana-transaction-status = "2.1.0"
 borsh = "1.5.2"
 bs58 = "0.5.1"
 parking_lot = "0.12.3"
+bytemuck = { version = "1.20.0", features = ["derive"] }
+scopeguard = "1.2.0"
+backoff = "0.4.0"
+tokio-native-tls = "0.3.1"

@@ -29,3 +29,7 @@ spl-associated-token-account = { workspace = true }
 solana-transaction-status = { workspace = true }
 borsh = { workspace = true }
 bs58 = { workspace = true }
+bytemuck = { workspace = true }
+tokio-tungstenite = { workspace = true }
+backoff = { workspace = true }
+tokio-native-tls = { workspace = true }

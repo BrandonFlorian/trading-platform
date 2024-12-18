@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
-use futures_util::{SinkExt, StreamExt};
 use parking_lot::{Mutex, RwLock};
 use serde_json::json;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::Signer};
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration, time::Instant};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
+use trading_common::error::AppError;
+use trading_common::websocket::WebSocketConfig;
+use trading_common::websocket::WebSocketConnectionManager;
 use trading_common::{data::get_server_keypair, event_system::EventSystem};
 use trading_common::{
     database::SupabaseClient,
@@ -17,7 +19,9 @@ use trading_common::{
         transaction::process_websocket_message,
     },
 };
-
+const MAX_MESSAGE_GAP: Duration = Duration::from_secs(30);
+const SUBSCRIPTION_REFRESH_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
+const PING_INTERVAL: Duration = Duration::from_secs(15);
 #[derive(Clone)]
 pub struct WalletMonitor {
     rpc_client: Arc<RpcClient>,
@@ -32,6 +36,45 @@ pub struct WalletMonitor {
     server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
 }
 
+pub struct MessageProcessorContext {
+    event_system: Arc<EventSystem>,
+    rpc_client: Arc<RpcClient>,
+    server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+    stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
+    copy_trade_settings: Arc<RwLock<Option<Vec<CopyTradeSettings>>>>,
+    message_receiver: mpsc::UnboundedReceiver<ClientTxInfo>,
+    server_keypair: Keypair,
+}
+
+pub struct WebSocketContext {
+    message_queue: mpsc::UnboundedSender<ClientTxInfo>,
+    stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
+    tracked_wallets: Arc<RwLock<Option<Vec<TrackedWallet>>>>,
+    rpc_client: Arc<RpcClient>,
+    connection_manager: WebSocketConnectionManager,
+}
+
+pub struct ConnectionMetrics {
+    last_message_time: Instant,
+    last_subscription_refresh: Instant,
+    last_pong_received: Instant,
+    message_count: u64,
+    error_count: u64,
+}
+
+impl ConnectionMetrics {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            last_message_time: now,
+            last_subscription_refresh: now,
+            last_pong_received: now,
+            message_count: 0,
+            error_count: 0,
+        }
+    }
+}
+
 impl WalletMonitor {
     pub async fn new(
         rpc_client: Arc<RpcClient>,
@@ -44,21 +87,21 @@ impl WalletMonitor {
         let user_id = server_keypair.pubkey().to_string();
         println!("Initializing WalletMonitor for user: {}", user_id);
 
-        let exists = supabase_client.user_exists(&user_id).await?;
-        println!("User exists check result: {}", exists);
+        Self::ensure_user_exists(&supabase_client, &user_id).await?;
 
-        if !exists {
-            println!("Creating new user in database");
-            match supabase_client.create_user(&user_id).await {
-                Ok(uuid) => println!("Created user with UUID: {}", uuid),
-                Err(e) => println!("Error creating user: {}", e),
-            }
-        }
+        let tracked_wallets = Self::fetch_tracked_wallets(&supabase_client)
+            .await
+            .map_err(|e| {
+                AppError::InitializationError(format!("Failed to fetch wallets: {}", e))
+            })?;
 
-        let tracked_wallets = Self::fetch_tracked_wallets(&supabase_client).await?;
+        let copy_trade_settings = Self::fetch_copy_trade_settings(&supabase_client)
+            .await
+            .map_err(|e| {
+                AppError::InitializationError(format!("Failed to fetch settings: {}", e))
+            })?;
+
         println!("Fetched {} tracked wallets", tracked_wallets.len());
-
-        let copy_trade_settings = Self::fetch_copy_trade_settings(&supabase_client).await?;
         println!("Fetched {} copy trade settings", copy_trade_settings.len());
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -78,7 +121,24 @@ impl WalletMonitor {
         })
     }
 
-    pub async fn start(&mut self) -> Result<()> {
+    async fn ensure_user_exists(
+        supabase_client: &SupabaseClient,
+        user_id: &str,
+    ) -> Result<(), AppError> {
+        let exists = supabase_client.user_exists(user_id).await?;
+
+        if !exists {
+            println!("Creating new user in database");
+            supabase_client.create_user(user_id).await.map_err(|e| {
+                AppError::InitializationError(format!("Failed to create user: {}", e))
+            })?;
+            println!("User created successfully");
+        }
+
+        Ok(())
+    }
+
+    pub async fn start(&mut self) -> Result<(), AppError> {
         println!("Starting WalletMonitor...");
 
         // Reset stop signal
@@ -114,7 +174,7 @@ impl WalletMonitor {
         Ok(())
     }
 
-    pub async fn stop(&mut self) -> Result<()> {
+    pub async fn stop(&mut self) -> Result<(), AppError> {
         println!("Stopping WalletMonitor...");
         let _ = self.stop_signal.send(true);
 
@@ -125,52 +185,62 @@ impl WalletMonitor {
         Ok(())
     }
 
-    async fn start_message_processor(&mut self) -> Result<tokio::task::JoinHandle<()>> {
-        let mut rx = self
-            .message_receiver
-            .lock()
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Message receiver not available"))?;
-        let event_system = self.event_system.clone();
-        let rpc_client = self.rpc_client.clone();
-        let server_wallet_manager = self.server_wallet_manager.clone();
-        let stop_rx = self.stop_receiver.clone();
-        let copy_trade_settings = self.copy_trade_settings.clone();
-        let server_keypair = get_server_keypair();
+    async fn start_message_processor(&mut self) -> Result<tokio::task::JoinHandle<()>, AppError> {
+        let context = MessageProcessorContext {
+            event_system: Arc::clone(&self.event_system),
+            rpc_client: Arc::clone(&self.rpc_client),
+            server_wallet_manager: Arc::clone(&self.server_wallet_manager),
+            stop_receiver: Arc::clone(&self.stop_receiver),
+            copy_trade_settings: Arc::clone(&self.copy_trade_settings),
+            message_receiver: self.message_receiver.lock().take().ok_or_else(|| {
+                AppError::InitializationError("Message receiver not available".to_string())
+            })?,
+            server_keypair: get_server_keypair(),
+        };
 
-        let handle = tokio::spawn(async move {
-            println!("Message processor started");
-            loop {
-                if *stop_rx.borrow() {
-                    println!("Message processor received stop signal");
-                    break;
-                }
+        Ok(tokio::spawn(Self::run_message_processor(context)))
+    }
 
-                tokio::select! {
-                    Some(client_message) = rx.recv() => {
-                        println!("Processing message: {}", client_message.signature);
-                        // Get settings within this scope
-                        let settings = copy_trade_settings.read().clone();
-                        if let Err(e) = Self::handle_transaction(
-                            &rpc_client,
-                            &server_keypair,
-                            &event_system,
-                            &server_wallet_manager,
-                            &settings,
-                            client_message,
-                        ).await {
-                            println!("Error processing transaction: {}", e);
-                        }
-                    }
-                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
-                        continue;
-                    }
+    async fn run_message_processor(context: MessageProcessorContext) {
+        let MessageProcessorContext {
+            event_system,
+            rpc_client,
+            server_wallet_manager,
+            stop_receiver,
+            copy_trade_settings,
+            mut message_receiver,
+            server_keypair,
+        } = context;
+
+        println!("Message processor started");
+        loop {
+            if *stop_receiver.borrow() {
+                println!("Message processor received stop signal");
+                break;
+            }
+
+            tokio::select! {
+            Some(client_message) = message_receiver.recv() => {
+                println!("Processing message: {}", client_message.signature);
+                let settings = copy_trade_settings.read().clone();
+                println!("Current copy trade settings: {:?}", settings);  // Add this debug line
+                if let Err(e) = Self::handle_transaction(
+                    &rpc_client,
+                    &server_keypair,
+                    &event_system,
+                    &server_wallet_manager,
+                    &settings,
+                    client_message,
+                ).await {
+                    println!("Error processing transaction: {}", e);
                 }
             }
-            println!("Message processor shutting down");
-        });
-
-        Ok(handle)
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                continue;
+                }
+            }
+        }
+        println!("Message processor shutting down");
     }
 
     async fn handle_transaction(
@@ -180,7 +250,7 @@ impl WalletMonitor {
         server_wallet_manager: &Arc<tokio::sync::Mutex<ServerWalletManager>>,
         copy_trade_settings: &Option<Vec<CopyTradeSettings>>,
         client_message: ClientTxInfo,
-    ) -> Result<()> {
+    ) -> Result<(), AppError> {
         println!("----------------------");
         println!("Handling transaction: {}", client_message.signature);
         println!("Transaction type: {:?}", client_message.transaction_type);
@@ -212,178 +282,339 @@ impl WalletMonitor {
                 settings.allow_additional_buys
             );
 
-            if settings.is_enabled
-                && should_copy_trade(&client_message, settings, server_wallet_manager).await?
-            {
-                println!("Executing copy trade for {:?}", client_message.dex_type);
-                let result = execute_copy_trade(
+            if settings.is_enabled {
+                Self::process_copy_trade(
                     rpc_client,
                     server_keypair,
-                    &client_message,
+                    server_wallet_manager,
                     settings,
-                    client_message.dex_type.clone(),
+                    &client_message,
                 )
-                .await;
-
-                match result {
-                    Ok(()) => {
-                        println!("Copy trade executed successfully");
-                        let mut wallet_manager = server_wallet_manager.lock().await;
-                        wallet_manager
-                            .handle_trade_execution(&client_message)
-                            .await?;
-                        println!("Wallet manager updated");
-                    }
-                    Err(e) => println!("Copy trade execution failed: {}", e),
-                }
-            } else {
-                println!("Copy trade validation failed");
+                .await
+                .map_err(|e| {
+                    AppError::MessageProcessingError(format!("Copy trade failed: {}", e))
+                })?;
             }
-        } else {
-            println!("No copy trade settings found");
         }
 
-        // Send tracked wallet notification
-        let notification = TrackedWalletNotification {
-            type_: "tracked_wallet_trade".to_string(),
-            data: client_message,
-        };
-        event_system.handle_tracked_wallet_trade(notification).await;
-        println!("Sent tracked wallet notification");
+        Self::send_notification(event_system, client_message)
+            .await
+            .map_err(|e| {
+                AppError::MessageProcessingError(format!("Failed to send notification: {}", e))
+            })?;
+
         println!("----------------------");
 
         Ok(())
     }
 
-    async fn start_websocket_monitor(&mut self) -> Result<tokio::task::JoinHandle<()>> {
-        let ws_url = self.ws_url.clone();
-        let message_queue = self.message_queue.clone();
-        let stop_rx = self.stop_receiver.clone();
-        let tracked_wallets = self.tracked_wallets.clone();
-        let rpc_client = self.rpc_client.clone();
+    async fn process_copy_trade(
+        rpc_client: &Arc<RpcClient>,
+        server_keypair: &Keypair,
+        server_wallet_manager: &Arc<tokio::sync::Mutex<ServerWalletManager>>,
+        settings: &CopyTradeSettings,
+        client_message: &ClientTxInfo,
+    ) -> Result<(), AppError> {
+        if !should_copy_trade(client_message, settings, server_wallet_manager).await? {
+            return Ok(());
+        }
 
-        let handle = tokio::spawn(async move {
-            let mut consecutive_errors = 0;
-            const MAX_CONSECUTIVE_ERRORS: u32 = 3;
-            const BASE_RECONNECT_DELAY: u64 = 5;
+        execute_copy_trade(
+            rpc_client,
+            server_keypair,
+            client_message,
+            settings,
+            client_message.dex_type.clone(),
+        )
+        .await
+        .map_err(|e| {
+            AppError::MessageProcessingError(format!("Execute copy trade failed: {}", e))
+        })?;
 
-            println!("WebSocket monitor started");
-            'outer: loop {
-                if *stop_rx.borrow() {
-                    println!("WebSocket monitor received stop signal");
-                    break;
-                }
+        let mut wallet_manager = server_wallet_manager.lock().await;
+        wallet_manager
+            .handle_trade_execution(client_message)
+            .await
+            .map_err(|e| {
+                AppError::MessageProcessingError(format!("Wallet update failed: {}", e))
+            })?;
 
-                let reconnect_delay = BASE_RECONNECT_DELAY * (1 << consecutive_errors.min(3));
-
-                // Collect wallet addresses before websocket connection
-                let wallet_addresses = {
-                    let wallets = tracked_wallets.read();
-                    wallets
-                        .as_ref()
-                        .map(|w| {
-                            w.iter()
-                                .map(|wallet| wallet.wallet_address.clone())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                };
-
-                if wallet_addresses.is_empty() {
-                    println!("No tracked wallets found");
-                    tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
-                    continue;
-                }
-
-                match connect_async(&ws_url).await {
-                    Ok((ws_stream, _)) => {
-                        consecutive_errors = 0;
-                        let (mut write, mut read) = ws_stream.split();
-
-                        // Subscribe to tracked wallets
-                        for (index, wallet_address) in wallet_addresses.iter().enumerate() {
-                            let subscribe_msg = json!({
-                                "jsonrpc": "2.0",
-                                "id": index + 1,
-                                "method": "logsSubscribe",
-                                "params": [
-                                    {"mentions": [wallet_address]},
-                                    {"commitment": "confirmed"}
-                                ]
-                            });
-
-                            match write.send(Message::Text(subscribe_msg.to_string())).await {
-                                Ok(_) => println!("Subscribed to wallet: {}", wallet_address),
-                                Err(e) => {
-                                    println!("Error subscribing to wallet: {}", e);
-                                    consecutive_errors += 1;
-                                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                        println!("Too many consecutive errors, waiting longer...");
-                                        tokio::time::sleep(Duration::from_secs(reconnect_delay))
-                                            .await;
-                                    }
-                                    continue 'outer;
-                                }
-                            }
-                        }
-
-                        // Process messages
-                        loop {
-                            if *stop_rx.borrow() {
-                                break 'outer;
-                            }
-
-                            tokio::select! {
-                                Some(msg) = read.next() => {
-                                    match msg {
-                                        Ok(Message::Text(text)) => {
-                                            match process_websocket_message(&text, &rpc_client).await {
-                                                Ok(Some(tx_info)) => {
-                                                    println!("Successfully processed transaction: {}", tx_info.signature);
-                                                    let _ = message_queue.send(tx_info);
-                                                }
-                                                Ok(None) => { /* Not a relevant message */ }
-                                                Err(e) => println!("Error processing message: {}", e),
-                                            }
-                                        }
-                                        Err(e) => {
-                                            println!("WebSocket error: {}", e);
-                                            consecutive_errors += 1;
-                                            break;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => continue,
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!("WebSocket connection error: {}", e);
-                        consecutive_errors += 1;
-                        tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
-                    }
-                }
-            }
-            println!("WebSocket monitor shutting down");
-        });
-
-        Ok(handle)
+        Ok(())
     }
 
-    async fn fetch_tracked_wallets(supabase_client: &SupabaseClient) -> Result<Vec<TrackedWallet>> {
+    async fn send_notification(
+        event_system: &Arc<EventSystem>,
+        client_message: ClientTxInfo,
+    ) -> Result<(), AppError> {
+        let notification = TrackedWalletNotification {
+            type_: "tracked_wallet_trade".to_string(),
+            data: client_message,
+        };
+
+        event_system.handle_tracked_wallet_trade(notification).await;
+
+        Ok(())
+    }
+
+    async fn start_websocket_monitor(&mut self) -> Result<tokio::task::JoinHandle<()>, AppError> {
+        let ws_config = WebSocketConfig {
+            health_check_interval: Duration::from_secs(30),
+            connection_timeout: Duration::from_secs(5),
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(60),
+        };
+
+        let context = WebSocketContext {
+            message_queue: self.message_queue.clone(),
+            stop_receiver: Arc::clone(&self.stop_receiver),
+            tracked_wallets: Arc::clone(&self.tracked_wallets),
+            rpc_client: Arc::clone(&self.rpc_client),
+            connection_manager: WebSocketConnectionManager::new(
+                self.ws_url.clone(),
+                Some(ws_config),
+            ),
+        };
+
+        Ok(tokio::spawn(Self::run_websocket_monitor(context)))
+    }
+
+    async fn run_websocket_monitor(context: WebSocketContext) {
+        let WebSocketContext {
+            message_queue,
+            stop_receiver,
+            tracked_wallets,
+            rpc_client,
+            mut connection_manager,
+        } = context;
+
+        println!("WebSocket monitor started");
+        let mut metrics = ConnectionMetrics::new();
+
+        loop {
+            if *stop_receiver.borrow() {
+                println!("WebSocket monitor received stop signal");
+                break;
+            }
+
+            let wallet_addresses: Vec<String> = {
+                let wallets = tracked_wallets.read();
+                wallets
+                    .as_ref()
+                    .map(|w| {
+                        w.iter()
+                            .map(|wallet| wallet.wallet_address.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+
+            if wallet_addresses.is_empty() {
+                println!("No tracked wallets found");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+
+            match connection_manager.ensure_connection().await {
+                Ok(_conn) => {
+                    let mut subscription_failed = false;
+
+                    // Initial subscription
+                    if !Self::subscribe_to_wallets(&mut connection_manager, &wallet_addresses).await
+                    {
+                        println!("Initial subscription failed, retrying...");
+                        continue;
+                    }
+
+                    // Message processing loop
+                    loop {
+                        if *stop_receiver.borrow() {
+                            break;
+                        }
+
+                        // Check if we need to refresh subscriptions
+                        if metrics.last_subscription_refresh.elapsed()
+                            > SUBSCRIPTION_REFRESH_INTERVAL
+                        {
+                            println!(
+                                "Refreshing subscriptions after {:?}",
+                                SUBSCRIPTION_REFRESH_INTERVAL
+                            );
+                            if !Self::subscribe_to_wallets(
+                                &mut connection_manager,
+                                &wallet_addresses,
+                            )
+                            .await
+                            {
+                                println!("Subscription refresh failed, reconnecting...");
+                                break;
+                            }
+                            metrics.last_subscription_refresh = Instant::now();
+                        }
+
+                        // Send periodic ping
+                        if metrics.last_pong_received.elapsed() > PING_INTERVAL {
+                            println!("Sending ping after {:?}", PING_INTERVAL);
+                            if let Err(e) = connection_manager
+                                .send_message(Message::Ping(vec![].into()))
+                                .await
+                            {
+                                println!("Failed to send ping: {}", e);
+                                break;
+                            }
+                        }
+
+                        tokio::select! {
+                            msg = connection_manager.receive_message() => {
+                                match msg {
+                                    Ok(Some(message)) => {
+                                        metrics.last_message_time = Instant::now();
+                                        metrics.message_count += 1;
+
+                                        match message {
+                                            Message::Text(text) => {
+                                                if let Err(e) = Self::handle_websocket_message(
+                                                    Message::Text(text),
+                                                    &rpc_client,
+                                                    &message_queue
+                                                ).await {
+                                                    println!("Error handling websocket message: {}", e);
+                                                    metrics.error_count += 1;
+                                                }
+                                            }
+                                            Message::Pong(_) => {
+                                                metrics.last_pong_received = Instant::now();
+                                                println!("Received pong response");
+                                            }
+                                            Message::Close(frame) => {
+                                                println!("Received close frame: {:?}", frame);
+                                                break;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        println!("WebSocket stream ended");
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        println!("WebSocket error: {}", e);
+                                        metrics.error_count += 1;
+                                        break;
+                                    }
+                                }
+                            }
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                                // Check for message gap
+                                if metrics.last_message_time.elapsed() > MAX_MESSAGE_GAP {
+                                    println!("No messages received for {:?}, initiating reconnection", MAX_MESSAGE_GAP);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Connection error: {}", e);
+                    metrics.error_count += 1;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+
+            // Print metrics before reconnection attempt
+            println!("Connection metrics before reconnect:");
+            println!("  Messages processed: {}", metrics.message_count);
+            println!("  Errors encountered: {}", metrics.error_count);
+            println!(
+                "  Time since last message: {:?}",
+                metrics.last_message_time.elapsed()
+            );
+
+            println!("Connection lost or error occurred, attempting to reconnect...");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+
+        println!("WebSocket monitor shutting down");
+    }
+
+    async fn subscribe_to_wallets(
+        connection_manager: &mut WebSocketConnectionManager,
+        wallet_addresses: &[String],
+    ) -> bool {
+        for (index, wallet_address) in wallet_addresses.iter().enumerate() {
+            let subscribe_msg = json!({
+                "jsonrpc": "2.0",
+                "id": index + 1,
+                "method": "logsSubscribe",
+                "params": [
+                    {"mentions": [wallet_address]},
+                    {"commitment": "confirmed"}
+                ]
+            });
+
+            println!(
+                "Sending subscription message for {}: {}",
+                wallet_address, subscribe_msg
+            );
+
+            if let Err(e) = connection_manager
+                .send_message(Message::Text(subscribe_msg.to_string().into()))
+                .await
+            {
+                println!("Error subscribing to wallet {}: {}", wallet_address, e);
+                return false;
+            }
+            println!("Subscribed to wallet: {}", wallet_address);
+        }
+        true
+    }
+
+    async fn handle_websocket_message(
+        message: Message,
+        rpc_client: &Arc<RpcClient>,
+        message_queue: &mpsc::UnboundedSender<ClientTxInfo>,
+    ) -> Result<(), AppError> {
+        match message {
+            Message::Text(text) => {
+                println!("Received WebSocket message: {}", text); // Add this debug line
+                if let Some(tx_info) = process_websocket_message(text.as_str(), rpc_client)
+                    .await
+                    .map_err(|e| {
+                        AppError::WebSocketError(format!("Failed to process message: {}", e))
+                    })?
+                {
+                    println!("Processed transaction info: {:?}", tx_info); // Add this debug line
+                    message_queue.send(tx_info).map_err(|e| {
+                        AppError::MessageProcessingError(format!("Failed to queue message: {}", e))
+                    })?;
+                }
+            }
+            Message::Close(_) => {
+                return Err(AppError::WebSocketError("WebSocket closed".to_string()));
+            }
+            _ => {
+                println!("Received non-text message: {:?}", message); // Add this debug line
+            }
+        }
+        Ok(())
+    }
+
+    async fn fetch_tracked_wallets(
+        supabase_client: &SupabaseClient,
+    ) -> Result<Vec<TrackedWallet>, AppError> {
         supabase_client
             .get_tracked_wallets()
             .await
             .context("Failed to fetch tracked wallets")
+            .map_err(|e| AppError::DatabaseError(format!("Failed to fetch wallets: {}", e)))
     }
 
     async fn fetch_copy_trade_settings(
         supabase_client: &SupabaseClient,
-    ) -> Result<Vec<CopyTradeSettings>> {
+    ) -> Result<Vec<CopyTradeSettings>, AppError> {
         supabase_client
             .get_copy_trade_settings()
             .await
             .context("Failed to fetch copy trade settings")
+            .map_err(|e| AppError::DatabaseError(format!("Failed to fetch settings: {}", e)))
     }
 }

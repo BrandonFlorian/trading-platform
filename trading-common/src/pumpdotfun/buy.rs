@@ -195,7 +195,7 @@ pub async fn process_buy_request(
     // Create containers
     let pump_fun_token_container = PumpFunTokenContainer {
         mint_address: token_address,
-        pump_fun_coin_data: None, // We don't need the API data anymore
+        pump_fun_coin_data: None,
         program_account_info: None,
     };
 

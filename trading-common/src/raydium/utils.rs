@@ -17,7 +17,7 @@ use super::{
     types::{
         PoolKeys, RaydiumApiResponse, RaydiumPoolInfo, RaydiumPoolKeyInfo, RaydiumPoolKeyResponse,
     },
-    COMPUTE_BUDGET_PRICE, COMPUTE_BUDGET_UNITS, OPEN_BOOK_PROGRAM, RAY_AUTHORITY_V4, RAY_V4,
+    AmmV4, COMPUTE_BUDGET_PRICE, COMPUTE_BUDGET_UNITS, OPEN_BOOK_PROGRAM, RAY_AUTHORITY_V4, RAY_V4,
     TOKEN_PROGRAM_ID, WSOL,
 };
 
@@ -292,4 +292,22 @@ pub fn extract_accounts(
         }
         _ => Ok((String::new(), String::new())),
     }
+}
+
+use bytemuck::{Pod, Zeroable};
+use std::mem;
+
+pub fn parse_pool_state(data: &[u8]) -> Result<AmmV4> {
+    if data.len() < 8 + mem::size_of::<AmmV4>() {
+        return Err(anyhow::anyhow!("Data length too short for AmmV4"));
+    }
+
+    // Skip discriminator
+    let pool_data = &data[8..];
+
+    // Use bytemuck for safe casting
+    let amm = bytemuck::try_from_bytes::<AmmV4>(pool_data)
+        .map_err(|e| anyhow::anyhow!("Failed to parse AmmV4: {}", e))?;
+
+    Ok(*amm)
 }
