@@ -1,7 +1,7 @@
 use super::constants::*;
 use super::types::PoolKeys;
 use crate::{
-    data::{confirm_transaction, get_token_balance},
+    data::confirm_transaction,
     error::AppError,
     extract_transaction_details,
     models::{BuyRequest, BuyResponse},

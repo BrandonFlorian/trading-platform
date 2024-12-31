@@ -1,14 +1,13 @@
 use anyhow::{Context, Result};
 use parking_lot::{Mutex, RwLock};
-use serde_json::json;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::Signer};
-use std::{sync::Arc, time::Duration, time::Instant};
+use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
+use tracing::error;
 use trading_common::error::AppError;
-use trading_common::websocket::WebSocketConfig;
-use trading_common::websocket::WebSocketConnectionManager;
+use trading_common::websocket::{WebSocketConfig, WebSocketConnectionManager};
 use trading_common::{data::get_server_keypair, event_system::EventSystem};
 use trading_common::{
     database::SupabaseClient,
@@ -19,9 +18,7 @@ use trading_common::{
         transaction::process_websocket_message,
     },
 };
-const MAX_MESSAGE_GAP: Duration = Duration::from_secs(30);
-const SUBSCRIPTION_REFRESH_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
-const PING_INTERVAL: Duration = Duration::from_secs(15);
+
 #[derive(Clone)]
 pub struct WalletMonitor {
     rpc_client: Arc<RpcClient>,
@@ -52,27 +49,6 @@ pub struct WebSocketContext {
     tracked_wallets: Arc<RwLock<Option<Vec<TrackedWallet>>>>,
     rpc_client: Arc<RpcClient>,
     connection_manager: WebSocketConnectionManager,
-}
-
-pub struct ConnectionMetrics {
-    last_message_time: Instant,
-    last_subscription_refresh: Instant,
-    last_pong_received: Instant,
-    message_count: u64,
-    error_count: u64,
-}
-
-impl ConnectionMetrics {
-    fn new() -> Self {
-        let now = Instant::now();
-        Self {
-            last_message_time: now,
-            last_subscription_refresh: now,
-            last_pong_received: now,
-            message_count: 0,
-            error_count: 0,
-        }
-    }
 }
 
 impl WalletMonitor {
@@ -223,7 +199,7 @@ impl WalletMonitor {
             Some(client_message) = message_receiver.recv() => {
                 println!("Processing message: {}", client_message.signature);
                 let settings = copy_trade_settings.read().clone();
-                println!("Current copy trade settings: {:?}", settings);  // Add this debug line
+                println!("Current copy trade settings: {:?}", settings);
                 if let Err(e) = Self::handle_transaction(
                     &rpc_client,
                     &server_keypair,
@@ -362,6 +338,7 @@ impl WalletMonitor {
             connection_timeout: Duration::from_secs(5),
             initial_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
+            max_retries: 3,
         };
 
         let context = WebSocketContext {
@@ -387,185 +364,71 @@ impl WalletMonitor {
             mut connection_manager,
         } = context;
 
-        println!("WebSocket monitor started");
-        let mut metrics = ConnectionMetrics::new();
-
         loop {
             if *stop_receiver.borrow() {
-                println!("WebSocket monitor received stop signal");
                 break;
             }
 
-            let wallet_addresses: Vec<String> = {
-                let wallets = tracked_wallets.read();
-                wallets
-                    .as_ref()
-                    .map(|w| {
-                        w.iter()
-                            .map(|wallet| wallet.wallet_address.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
+            let wallet_addresses: Vec<String> = tracked_wallets
+                .read()
+                .as_ref()
+                .map(|w| {
+                    w.iter()
+                        .map(|wallet| wallet.wallet_address.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
 
             if wallet_addresses.is_empty() {
-                println!("No tracked wallets found");
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 continue;
             }
 
             match connection_manager.ensure_connection().await {
-                Ok(_conn) => {
-                    let mut subscription_failed = false;
-
-                    // Initial subscription
-                    if !Self::subscribe_to_wallets(&mut connection_manager, &wallet_addresses).await
-                    {
-                        println!("Initial subscription failed, retrying...");
+                Ok(_) => {
+                    // Try to subscribe
+                    if let Err(e) = connection_manager.subscribe(wallet_addresses).await {
+                        error!("Failed to subscribe to wallets: {}", e);
                         continue;
                     }
 
-                    // Message processing loop
+                    // Process messages until error or closure
                     loop {
                         if *stop_receiver.borrow() {
                             break;
                         }
 
-                        // Check if we need to refresh subscriptions
-                        if metrics.last_subscription_refresh.elapsed()
-                            > SUBSCRIPTION_REFRESH_INTERVAL
-                        {
-                            println!(
-                                "Refreshing subscriptions after {:?}",
-                                SUBSCRIPTION_REFRESH_INTERVAL
-                            );
-                            if !Self::subscribe_to_wallets(
-                                &mut connection_manager,
-                                &wallet_addresses,
-                            )
-                            .await
-                            {
-                                println!("Subscription refresh failed, reconnecting...");
-                                break;
-                            }
-                            metrics.last_subscription_refresh = Instant::now();
-                        }
-
-                        // Send periodic ping
-                        if metrics.last_pong_received.elapsed() > PING_INTERVAL {
-                            println!("Sending ping after {:?}", PING_INTERVAL);
-                            if let Err(e) = connection_manager
-                                .send_message(Message::Ping(vec![].into()))
+                        match connection_manager.receive_message().await {
+                            Ok(Some(Message::Text(text))) => {
+                                if let Err(e) = Self::handle_websocket_message(
+                                    Message::Text(text),
+                                    &rpc_client,
+                                    &message_queue,
+                                )
                                 .await
-                            {
-                                println!("Failed to send ping: {}", e);
+                                {
+                                    error!("Message handling error: {}", e);
+                                }
+                            }
+                            Ok(Some(Message::Close(_))) => break,
+                            Ok(None) => break, // Connection closed
+                            Err(e) => {
+                                error!("WebSocket error: {}", e);
                                 break;
                             }
-                        }
-
-                        tokio::select! {
-                            msg = connection_manager.receive_message() => {
-                                match msg {
-                                    Ok(Some(message)) => {
-                                        metrics.last_message_time = Instant::now();
-                                        metrics.message_count += 1;
-
-                                        match message {
-                                            Message::Text(text) => {
-                                                if let Err(e) = Self::handle_websocket_message(
-                                                    Message::Text(text),
-                                                    &rpc_client,
-                                                    &message_queue
-                                                ).await {
-                                                    println!("Error handling websocket message: {}", e);
-                                                    metrics.error_count += 1;
-                                                }
-                                            }
-                                            Message::Pong(_) => {
-                                                metrics.last_pong_received = Instant::now();
-                                                println!("Received pong response");
-                                            }
-                                            Message::Close(frame) => {
-                                                println!("Received close frame: {:?}", frame);
-                                                break;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        println!("WebSocket stream ended");
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        println!("WebSocket error: {}", e);
-                                        metrics.error_count += 1;
-                                        break;
-                                    }
-                                }
-                            }
-                            _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                                // Check for message gap
-                                if metrics.last_message_time.elapsed() > MAX_MESSAGE_GAP {
-                                    println!("No messages received for {:?}, initiating reconnection", MAX_MESSAGE_GAP);
-                                    break;
-                                }
-                            }
+                            _ => continue,
                         }
                     }
                 }
                 Err(e) => {
-                    println!("Connection error: {}", e);
-                    metrics.error_count += 1;
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    error!("Failed to ensure connection: {}", e);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
-
-            // Print metrics before reconnection attempt
-            println!("Connection metrics before reconnect:");
-            println!("  Messages processed: {}", metrics.message_count);
-            println!("  Errors encountered: {}", metrics.error_count);
-            println!(
-                "  Time since last message: {:?}",
-                metrics.last_message_time.elapsed()
-            );
-
-            println!("Connection lost or error occurred, attempting to reconnect...");
-            tokio::time::sleep(Duration::from_secs(5)).await;
         }
 
-        println!("WebSocket monitor shutting down");
-    }
-
-    async fn subscribe_to_wallets(
-        connection_manager: &mut WebSocketConnectionManager,
-        wallet_addresses: &[String],
-    ) -> bool {
-        for (index, wallet_address) in wallet_addresses.iter().enumerate() {
-            let subscribe_msg = json!({
-                "jsonrpc": "2.0",
-                "id": index + 1,
-                "method": "logsSubscribe",
-                "params": [
-                    {"mentions": [wallet_address]},
-                    {"commitment": "confirmed"}
-                ]
-            });
-
-            println!(
-                "Sending subscription message for {}: {}",
-                wallet_address, subscribe_msg
-            );
-
-            if let Err(e) = connection_manager
-                .send_message(Message::Text(subscribe_msg.to_string().into()))
-                .await
-            {
-                println!("Error subscribing to wallet {}: {}", wallet_address, e);
-                return false;
-            }
-            println!("Subscribed to wallet: {}", wallet_address);
-        }
-        true
+        // Cleanup on exit
+        connection_manager.shutdown().await.ok();
     }
 
     async fn handle_websocket_message(
@@ -575,14 +438,14 @@ impl WalletMonitor {
     ) -> Result<(), AppError> {
         match message {
             Message::Text(text) => {
-                println!("Received WebSocket message: {}", text); // Add this debug line
+                println!("Received WebSocket message: {}", text);
                 if let Some(tx_info) = process_websocket_message(text.as_str(), rpc_client)
                     .await
                     .map_err(|e| {
                         AppError::WebSocketError(format!("Failed to process message: {}", e))
                     })?
                 {
-                    println!("Processed transaction info: {:?}", tx_info); // Add this debug line
+                    println!("Processed transaction info: {:?}", tx_info);
                     message_queue.send(tx_info).map_err(|e| {
                         AppError::MessageProcessingError(format!("Failed to queue message: {}", e))
                     })?;
@@ -592,7 +455,7 @@ impl WalletMonitor {
                 return Err(AppError::WebSocketError("WebSocket closed".to_string()));
             }
             _ => {
-                println!("Received non-text message: {:?}", message); // Add this debug line
+                println!("Received non-text message: {:?}", message);
             }
         }
         Ok(())

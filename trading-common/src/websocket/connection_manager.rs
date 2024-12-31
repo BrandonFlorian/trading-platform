@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use backoff::{backoff::Backoff, ExponentialBackoff};
 use futures_util::{stream::StreamExt, SinkExt};
+use serde_json::json;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
@@ -17,6 +18,7 @@ pub struct WebSocketConfig {
     pub connection_timeout: Duration,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
+    pub max_retries: u32,
 }
 
 impl Default for WebSocketConfig {
@@ -26,6 +28,7 @@ impl Default for WebSocketConfig {
             connection_timeout: Duration::from_secs(5),
             initial_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
+            max_retries: 3,
         }
     }
 }
@@ -49,10 +52,12 @@ pub struct WebSocketConnectionManager {
 impl WebSocketConnectionManager {
     pub fn new(ws_url: String, config: Option<WebSocketConfig>) -> Self {
         let config = config.unwrap_or_default();
-        let mut backoff = ExponentialBackoff::default();
-        backoff.max_elapsed_time = None;
-        backoff.initial_interval = config.initial_backoff;
-        backoff.max_interval = config.max_backoff;
+        let backoff = ExponentialBackoff {
+            max_elapsed_time: None,
+            initial_interval: config.initial_backoff,
+            max_interval: config.max_backoff,
+            ..ExponentialBackoff::default()
+        };
 
         Self {
             ws_url,
@@ -102,6 +107,48 @@ impl WebSocketConnectionManager {
                 self.establish_connection().await
             }
         }
+    }
+
+    pub async fn subscribe(&mut self, subscriptions: Vec<String>) -> Result<(), AppError> {
+        let timeout_duration = self.config.connection_timeout;
+        let conn = self.ensure_connection().await?;
+
+        for (idx, sub) in subscriptions.iter().enumerate() {
+            let msg = json!({
+                "jsonrpc": "2.0",
+                "id": idx + 1,
+                "method": "logsSubscribe",
+                "params": [
+                    {"mentions": [sub]},
+                    {"commitment": "confirmed"}
+                ]
+            });
+
+            // Send subscription request
+            conn.send(Message::Text(msg.to_string().into()))
+                .await
+                .map_err(|e| AppError::WebSocketError(format!("Subscribe failed: {}", e)))?;
+
+            // Wait for subscription confirmation
+            match tokio::time::timeout(timeout_duration, conn.next()).await {
+                Ok(Some(Ok(Message::Text(resp)))) => {
+                    // Verify subscription response
+                    if !resp.to_string().contains("\"result\"") {
+                        return Err(AppError::WebSocketError(format!(
+                            "Invalid subscription response: {}",
+                            resp
+                        )));
+                    }
+                }
+                _ => {
+                    return Err(AppError::WebSocketError(
+                        "Failed to receive subscription confirmation".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn establish_connection(&mut self) -> Result<&mut WsStream, AppError> {

@@ -294,7 +294,6 @@ pub fn extract_accounts(
     }
 }
 
-use bytemuck::{Pod, Zeroable};
 use std::mem;
 
 pub fn parse_pool_state(data: &[u8]) -> Result<AmmV4> {
