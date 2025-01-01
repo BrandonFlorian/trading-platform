@@ -237,3 +237,83 @@ impl From<RaydiumPoolKeyInfo> for PoolKeys {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C, align(8))]
+#[derive(bytemuck::Pod, bytemuck::Zeroable)]
+pub struct AmmV4 {
+    pub status: u64,
+    pub nonce: u64,
+    pub order_num: u64,
+    pub depth: u64,
+    pub base_decimals: u64,
+    pub quote_decimals: u64,
+    pub state: u64,
+    pub reset_flag: u64,
+    pub min_size: u64,
+    pub vol_max_cut_ratio: u64,
+    pub amount_wave_ratio: u64,
+    pub base_lot_size: u64,
+    pub quote_lot_size: u64,
+    pub min_price_multiplier: u64,
+    pub max_price_multiplier: u64,
+    pub system_decimal_value: u64,
+    pub min_separate_numerator: u64,
+    pub min_separate_denominator: u64,
+    pub trade_fee_numerator: u64,
+    pub trade_fee_denominator: u64,
+    pub pnl_numerator: u64,
+    pub pnl_denominator: u64,
+    pub swap_fee_numerator: u64,
+    pub swap_fee_denominator: u64,
+    pub base_need_take_pnl: u64,
+    pub quote_need_take_pnl: u64,
+    pub quote_total_pnl: u64,
+    pub base_total_pnl: u64,
+    pub pool_open_time: u64,
+    pub punish_pc_amount: u64,
+    pub punish_coin_amount: u64,
+    pub ordere_book_to_init_time: u64,
+    pub base_vault_key: Pubkey,
+    pub quote_vault_key: Pubkey,
+    pub base_mint: Pubkey,
+    pub quote_mint: Pubkey,
+    pub lp_mint: Pubkey,
+    pub open_orders: Pubkey,
+    pub market_id: Pubkey,
+    pub market_program_id: Pubkey,
+    pub target_orders: Pubkey,
+    pub withdraw_queue: Pubkey,
+    pub lp_vault: Pubkey,
+    pub owner: Pubkey,
+    pub pnl_owner: Pubkey,
+    pub base_vault_balance: u64,
+    pub quote_vault_balance: u64,
+    pub lp_mint_supply: u64,
+}
+
+impl AmmV4 {
+    pub fn get_price(&self) -> f64 {
+        let base_amount = self.base_vault_balance as f64 / (10f64.powi(self.base_decimals as i32));
+        let quote_amount =
+            self.quote_vault_balance as f64 / (10f64.powi(self.quote_decimals as i32));
+
+        if base_amount > 0.0 {
+            quote_amount / base_amount
+        } else {
+            0.0
+        }
+    }
+
+    pub fn get_tvl(&self) -> f64 {
+        let quote_amount =
+            self.quote_vault_balance as f64 / (10f64.powi(self.quote_decimals as i32));
+        quote_amount * 2.0 // Approximate TVL as twice the quote amount since it's balanced
+    }
+
+    pub fn get_liquidity(&self) -> f64 {
+        let quote_amount =
+            self.quote_vault_balance as f64 / (10f64.powi(self.quote_decimals as i32));
+        quote_amount
+    }
+}

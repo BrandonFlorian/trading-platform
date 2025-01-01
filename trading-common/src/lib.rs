@@ -4,6 +4,7 @@ pub mod error;
 pub mod models;
 pub mod pumpdotfun;
 pub mod raydium;
+pub mod websocket;
 pub mod utils {
     pub mod copy_trade;
     pub mod data;
