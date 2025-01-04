@@ -20,7 +20,7 @@ use super::{
     AmmV4, COMPUTE_BUDGET_PRICE, COMPUTE_BUDGET_UNITS, OPEN_BOOK_PROGRAM, RAY_AUTHORITY_V4, RAY_V4,
     TOKEN_PROGRAM_ID, WSOL,
 };
-
+use reqwest::get;
 // Core functionality
 pub async fn get_pool_info(token_mint: &str) -> Result<RaydiumPoolInfo, AppError> {
     let url = format!(
@@ -33,7 +33,8 @@ pub async fn get_pool_info(token_mint: &str) -> Result<RaydiumPoolInfo, AppError
          page=1",
         token_mint
     );
-
+    let test = get(&url).await;
+    println!("test: {:?}", test);
     let mut response = surf::get(&url)
         .header("User-Agent", "Mozilla/5.0")
         .await

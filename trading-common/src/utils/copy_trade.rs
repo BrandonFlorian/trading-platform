@@ -32,7 +32,7 @@ pub async fn should_copy_trade(
             // Check if the current number of open positions is less than max allowed
             let wallet_manager = Arc::clone(server_wallet_manager);
             let manager = wallet_manager.lock().await;
-            let current_positions = manager.get_tokens().len();
+            let current_positions = manager.get_tokens().count();
 
             if current_positions >= settings.max_open_positions as usize {
                 println!(
@@ -44,7 +44,7 @@ pub async fn should_copy_trade(
 
             if !settings.allow_additional_buys {
                 // Check if we already hold this token
-                if manager.get_tokens().contains_key(&tx_info.token_address) {
+                if manager.tokens.contains_key(&tx_info.token_address) {
                     println!("Additional buys not allowed and token already held");
                     return Ok(false);
                 }

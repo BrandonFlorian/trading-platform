@@ -33,3 +33,6 @@ bytemuck = { workspace = true }
 tokio-tungstenite = { workspace = true }
 backoff = { workspace = true }
 tokio-native-tls = { workspace = true }
+reqwest = { workspace = true }
+atomic_float = { workspace = true }
+dashmap = { workspace = true }

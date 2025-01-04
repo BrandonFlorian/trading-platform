@@ -5,6 +5,9 @@ use crate::utils::data::{
 };
 use crate::{ClientTxInfo, TransactionType};
 use anyhow::{Context, Result};
+use atomic_float::AtomicF64;
+use dashmap::DashMap;
+use reqwest::Client;
 use serde::Serialize;
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_request::TokenAccountsFilter;
@@ -12,7 +15,6 @@ use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use surf::Client;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenInfo {
@@ -26,12 +28,12 @@ pub struct TokenInfo {
 }
 
 pub struct ServerWalletManager {
-    rpc_client: Arc<RpcClient>,
-    _http_client: Client,
-    public_key: Pubkey,
-    balance: f64,
-    tokens: HashMap<String, TokenInfo>,
-    event_system: Arc<EventSystem>,
+    pub rpc_client: Arc<RpcClient>,
+    pub http_client: Client,
+    pub public_key: Pubkey,
+    pub balance: AtomicF64,
+    pub tokens: DashMap<String, TokenInfo>,
+    pub event_system: Arc<EventSystem>,
 }
 
 impl ServerWalletManager {
@@ -42,10 +44,10 @@ impl ServerWalletManager {
     ) -> Result<Self> {
         let mut manager = Self {
             rpc_client,
-            _http_client: Client::new(),
+            http_client: Client::new(),
             public_key,
-            balance: 0.0,
-            tokens: HashMap::new(),
+            balance: AtomicF64::new(0.0),
+            tokens: DashMap::new(),
             event_system,
         };
         manager.refresh_balances().await?;
@@ -54,7 +56,9 @@ impl ServerWalletManager {
 
     pub async fn refresh_balances(&mut self) -> Result<()> {
         // Update SOL balance
-        self.balance = self.get_sol_balance().await?;
+        let new_balance = self.get_sol_balance().await?;
+        self.balance
+            .store(new_balance, std::sync::atomic::Ordering::SeqCst);
 
         // Update token balances
         self.get_token_balances().await?;
@@ -107,12 +111,15 @@ impl ServerWalletManager {
         Ok(())
     }
 
-    pub fn update_balance(&mut self, amount: f64) {
-        self.balance += amount;
+    pub fn update_balance(&self, amount: f64) {
+        let current = self.balance.load(std::sync::atomic::Ordering::SeqCst);
+        self.balance
+            .store(current + amount, std::sync::atomic::Ordering::SeqCst);
         self.emit_wallet_update();
     }
+
     pub fn update_token_balance(
-        &mut self,
+        &self,
         token_address: &str,
         new_balance: f64,
         decimals: u8,
@@ -120,8 +127,16 @@ impl ServerWalletManager {
     ) {
         let formatted_balance = format_balance(new_balance, decimals);
 
-        if let Some(token) = self.tokens.get_mut(token_address) {
-            token.balance = formatted_balance;
+        if let Some(mut token) = self.tokens.get_mut(token_address) {
+            *token.value_mut() = TokenInfo {
+                address: token.address.clone(),
+                symbol: token.symbol.clone(),
+                name: token.name.clone(),
+                balance: formatted_balance,
+                metadata_uri: token.metadata_uri.clone(),
+                decimals: token.decimals,
+                market_cap: token.market_cap,
+            };
         } else if let Some(info) = token_info {
             self.tokens.insert(
                 token_address.to_string(),
@@ -156,18 +171,21 @@ impl ServerWalletManager {
 
     pub fn get_wallet_info(&self) -> serde_json::Value {
         serde_json::json!({
-            "balance": self.balance,
-            "tokens": self.tokens.values().collect::<Vec<_>>(),
+            "balance": self.balance.load(std::sync::atomic::Ordering::SeqCst),
+            "tokens": self.tokens.iter().map(|e| e.value().clone()).collect::<Vec<_>>(),
         })
     }
 
-    // Helper methods for querying state
-    pub fn get_tokens(&self) -> &HashMap<String, TokenInfo> {
-        &self.tokens
+    pub fn get_tokens(
+        &self,
+    ) -> impl Iterator<Item = dashmap::mapref::multiple::RefMulti<String, TokenInfo>> {
+        self.tokens.iter()
     }
 
-    pub fn get_token_values(&self) -> impl Iterator<Item = &TokenInfo> {
-        self.tokens.values()
+    pub fn get_token_values(
+        &self,
+    ) -> impl Iterator<Item = dashmap::mapref::multiple::RefMulti<String, TokenInfo>> {
+        self.tokens.iter()
     }
 
     pub async fn handle_trade_execution(&mut self, tx_info: &ClientTxInfo) -> Result<()> {
