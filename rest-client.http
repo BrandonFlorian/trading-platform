@@ -13,7 +13,7 @@ POST {{baseUrl}}/tracked_wallets
 Content-Type: application/json
 
 {
-    "wallet_address": "{{walletAddress}}",
+    "wallet_address": "{{trackedWalletAddress}}",
     "is_active": true
 }
 
