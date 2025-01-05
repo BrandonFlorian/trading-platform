@@ -2,6 +2,9 @@
 @walletAddress = {{$dotenv WALLET_ADDRESS}}
 @trackedWalletId = {{$dotenv TRACKED_WALLET_ID}}
 @trackedWalletAddress = {{$dotenv TRACKED_WALLET_ADDRESS}}
+@pumpFunTokenAddress = {{$dotenv PUMP_FUN_TOKEN_ADDRESS}}
+@raydiumTokenAddress = {{$dotenv RAYDIUM_TOKEN_ADDRESS}}
+
 ### Get all tracked wallets
 GET {{baseUrl}}/tracked_wallets
 
@@ -71,7 +74,7 @@ POST {{baseUrl}}/pump_fun/buy
 Content-Type: application/json
 
 {
-    "token_address": "YOUR_TOKEN_ADDRESS",
+    "token_address": "{{pumpFunTokenAddress}}",
     "sol_quantity": 0.001,
     "slippage_tolerance": 0.2
 }
@@ -81,7 +84,7 @@ POST {{baseUrl}}/pump_fun/sell
 Content-Type: application/json
 
 {
-    "token_address": "YOUR_TOKEN_ADDRESS",
+    "token_address": "{{pumpFunTokenAddress}}",
     "token_quantity": 1000,
     "slippage_tolerance": 0.2
 }
@@ -91,7 +94,7 @@ POST {{baseUrl}}/raydium/buy
 Content-Type: application/json
 
 {
-    "token_address": "YOUR_TOKEN_ADDRESS",
+    "token_address": "{{raydiumTokenAddress}}",
     "sol_quantity": 0.001,
     "slippage_tolerance": 0.2
 }
@@ -101,7 +104,7 @@ POST {{baseUrl}}/raydium/sell
 Content-Type: application/json
 
 {
-    "token_address": "YOUR_TOKEN_ADDRESS",
+    "token_address": "{{raydiumTokenAddress}}",
     "token_quantity": 1000,
     "slippage_tolerance": 0.2
 }
