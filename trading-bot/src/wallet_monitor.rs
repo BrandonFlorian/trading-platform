@@ -6,18 +6,24 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::error;
-use trading_common::error::AppError;
-use trading_common::websocket::{WebSocketConfig, WebSocketConnectionManager};
-use trading_common::{data::get_server_keypair, event_system::EventSystem};
 use trading_common::{
+    data::get_server_keypair,
     database::SupabaseClient,
-    models::{ClientTxInfo, CopyTradeSettings, TrackedWallet, TrackedWalletNotification},
+    error::AppError,
+    event_system::EventSystem,
+    models::{
+        ClientTxInfo, CopyTradeNotification, CopyTradeSettings, TrackedWallet,
+        TrackedWalletNotification, TransactionLoggedNotification,
+    },
     server_wallet_manager::ServerWalletManager,
     utils::{
         copy_trade::{execute_copy_trade, should_copy_trade},
         transaction::process_websocket_message,
     },
+    websocket::{WebSocketConfig, WebSocketConnectionManager},
+    TransactionLog,
 };
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct WalletMonitor {
@@ -248,18 +254,10 @@ impl WalletMonitor {
 
         // Check copy trading settings
         if let Some(settings) = copy_trade_settings.as_ref().and_then(|s| s.first()) {
-            println!("Copy trading settings found:");
-            println!("  Enabled: {}", settings.is_enabled);
-            println!("  Trade amount: {} SOL", settings.trade_amount_sol);
-            println!("  Max slippage: {}%", settings.max_slippage * 100.0);
-            println!("  Max open positions: {}", settings.max_open_positions);
-            println!(
-                "  Allow additional buys: {}",
-                settings.allow_additional_buys
-            );
-
             if settings.is_enabled {
-                Self::process_copy_trade(
+                println!("Copy trading enabled with settings: {:?}", settings);
+
+                match Self::process_copy_trade(
                     rpc_client,
                     server_keypair,
                     server_wallet_manager,
@@ -267,12 +265,48 @@ impl WalletMonitor {
                     &client_message,
                 )
                 .await
-                .map_err(|e| {
-                    AppError::MessageProcessingError(format!("Copy trade failed: {}", e))
-                })?;
+                {
+                    Ok(_) => {
+                        // Emit copy trade executed event after successful execution
+                        event_system
+                            .handle_copy_trade_executed(CopyTradeNotification {
+                                data: client_message.clone(),
+                                type_: "copy_trade_executed".to_string(),
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        println!("Copy trade failed: {}", e);
+                        return Err(AppError::MessageProcessingError(format!(
+                            "Copy trade failed: {}",
+                            e
+                        )));
+                    }
+                }
             }
         }
 
+        let transaction_log = TransactionLog {
+            id: Uuid::new_v4(),
+            user_id: server_keypair.pubkey().to_string(),
+            tracked_wallet_id: None, // todo: should probably track this in ClientTxInfo
+            signature: client_message.signature.clone(),
+            transaction_type: format!("{:?}", client_message.transaction_type),
+            token_address: client_message.token_address.clone(),
+            amount: client_message.amount_token,
+            price_sol: client_message.price_per_token,
+            timestamp: chrono::Utc::now(),
+        };
+
+        // Log to database after successful processing
+        event_system
+            .handle_transaction_logged(TransactionLoggedNotification {
+                data: transaction_log.clone(),
+                type_: "transaction_logged".to_string(),
+            })
+            .await;
+
+        // Send notification for transaction
         Self::send_notification(event_system, client_message)
             .await
             .map_err(|e| {

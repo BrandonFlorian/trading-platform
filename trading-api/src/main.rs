@@ -10,7 +10,7 @@ use solana_sdk::signer::Signer;
 use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
-use trading_common::{data::get_server_keypair, SupabaseClient};
+use trading_common::{data::get_server_keypair, event_system::EventSystem, SupabaseClient};
 mod routes;
 
 #[derive(Clone)]
@@ -27,8 +27,8 @@ async fn main() -> Result<()> {
     let supabase_service_role_key =
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
 
-
-    let supabase_key = env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
+    let supabase_key =
+        env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
 
     let rpc_url = env::var("SOLANA_RPC_HTTP_URL").context("SOLANA_RPC_HTTP_URL must be set")?;
     println!("rpc_url: {}", rpc_url);
@@ -37,11 +37,14 @@ async fn main() -> Result<()> {
     let user_id = server_keypair.pubkey().to_string();
     println!("user_id: {}", user_id);
 
+    let event_system = Arc::new(EventSystem::new());
+
     let supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
+        event_system,
     );
     let rpc_client = RpcClient::new(rpc_url);
     let shared_rpc_client = Arc::new(ArcSwap::from_pointee(rpc_client));

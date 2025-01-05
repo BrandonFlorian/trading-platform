@@ -3,7 +3,9 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use chrono::Utc;
 use serde_json::json;
+use solana_sdk::signer::Signer;
 use trading_common::{
     data::get_server_keypair,
     error::AppError,
@@ -132,8 +134,32 @@ pub async fn pump_fun_buy(
 ) -> Result<Json<BuyResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
+
+    let token_address = request.token_address.clone();
     println!("request: {:?}", request);
+
     let response = process_buy_request(&rpc_client, &server_keypair, request).await?;
+
+    if response.success {
+        // Log successful manual trade
+        let transaction_log = TransactionLog {
+            id: Uuid::new_v4(),
+            user_id: server_keypair.pubkey().to_string(),
+            tracked_wallet_id: None, // None indicates manual trade
+            signature: response.signature.clone(),
+            transaction_type: "Buy".to_string(),
+            token_address,
+            amount: response.token_quantity,
+            price_sol: response.sol_spent,
+            timestamp: Utc::now(),
+        };
+
+        if let Err(e) = state.supabase_client.log_transaction(transaction_log).await {
+            println!("Failed to log transaction: {}", e);
+            // Continue with response even if logging fails
+        }
+    }
+
     Ok(Json(response))
 }
 
@@ -143,8 +169,32 @@ pub async fn pump_fun_sell(
 ) -> Result<Json<SellResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
+
     println!("request: {:?}", request);
+
+    let token_address = request.token_address.clone();
+
     let response = process_sell_request(&rpc_client, &server_keypair, request).await?;
+
+    if response.success {
+        // Log successful manual trade
+        let transaction_log = TransactionLog {
+            id: Uuid::new_v4(),
+            user_id: server_keypair.pubkey().to_string(),
+            tracked_wallet_id: None, // None indicates manual trade
+            signature: response.signature.clone(),
+            transaction_type: "Sell".to_string(),
+            token_address,
+            amount: response.token_quantity,
+            price_sol: response.sol_received,
+            timestamp: Utc::now(),
+        };
+
+        if let Err(e) = state.supabase_client.log_transaction(transaction_log).await {
+            println!("Failed to log transaction: {}", e);
+            // Continue with response even if logging fails
+        }
+    }
     Ok(Json(response))
 }
 
@@ -156,7 +206,31 @@ pub async fn raydium_buy(
     let server_keypair = get_server_keypair();
 
     println!("Processing Raydium buy request: {:?}", request);
+
+    let token_address = request.token_address.clone();
+
     let response = process_raydium_buy(&rpc_client, &server_keypair, &request).await?;
+
+    if response.success {
+        // Log successful manual trade
+        let transaction_log = TransactionLog {
+            id: Uuid::new_v4(),
+            user_id: server_keypair.pubkey().to_string(),
+            tracked_wallet_id: None, // None indicates manual trade
+            signature: response.signature.clone(),
+            transaction_type: "Buy".to_string(),
+            token_address,
+            amount: response.token_quantity,
+            price_sol: response.sol_spent,
+            timestamp: Utc::now(),
+        };
+
+        if let Err(e) = state.supabase_client.log_transaction(transaction_log).await {
+            println!("Failed to log transaction: {}", e);
+            // Continue with response even if logging fails
+        }
+    }
+
     Ok(Json(response))
 }
 
@@ -168,6 +242,28 @@ pub async fn raydium_sell(
     let server_keypair = get_server_keypair();
 
     println!("Processing Raydium sell request: {:?}", request);
+    let token_address = request.token_address.clone();
     let response = process_raydium_sell(&rpc_client, &server_keypair, &request).await?;
+
+    if response.success {
+        // Log successful manual trade
+        let transaction_log = TransactionLog {
+            id: Uuid::new_v4(),
+            user_id: server_keypair.pubkey().to_string(),
+            tracked_wallet_id: None, // None indicates manual trade
+            signature: response.signature.clone(),
+            transaction_type: "Sell".to_string(),
+            token_address,
+            amount: response.token_quantity,
+            price_sol: response.sol_received,
+            timestamp: Utc::now(),
+        };
+
+        if let Err(e) = state.supabase_client.log_transaction(transaction_log).await {
+            println!("Failed to log transaction: {}", e);
+            // Continue with response even if logging fails
+        }
+    }
+
     Ok(Json(response))
 }

@@ -16,3 +16,4 @@ trading-common = { path = "../trading-common" }
 arc-swap = { workspace = true }
 solana-client = { workspace = true }
 solana-sdk = { workspace = true }
+chrono = { workspace = true }
