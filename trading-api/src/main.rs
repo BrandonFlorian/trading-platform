@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
         &user_id,
         event_system,
     );
+
     let rpc_client = RpcClient::new(rpc_url);
     let shared_rpc_client = Arc::new(ArcSwap::from_pointee(rpc_client));
 
@@ -58,15 +59,15 @@ async fn main() -> Result<()> {
         .route("/tracked_wallets", get(routes::get_tracked_wallets))
         .route("/tracked_wallets", post(routes::add_tracked_wallet))
         .route(
-            "/tracked_wallets/archive/:wallet_address",
+            "/tracked_wallets/archive/{wallet_address}",
             put(routes::archive_tracked_wallet),
         )
         .route(
-            "/tracked_wallets/unarchive/:wallet_address",
+            "/tracked_wallets/unarchive/{wallet_address}",
             put(routes::unarchive_tracked_wallet),
         )
         .route(
-            "/tracked_wallets/:wallet_address",
+            "/tracked_wallets/{wallet_address}",
             delete(routes::delete_tracked_wallet),
         )
         .route(
@@ -83,7 +84,7 @@ async fn main() -> Result<()> {
             put(routes::update_copy_trade_settings),
         )
         .route(
-            "/copy_trade_settings/:tracked_wallet_id",
+            "/copy_trade_settings/{tracked_wallet_id}",
             delete(routes::delete_copy_trade_settings),
         )
         .route("/transaction_history", get(routes::get_transaction_history))

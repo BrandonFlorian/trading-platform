@@ -1,0 +1,107 @@
+@baseUrl = {{$dotenv BASE_URL}}
+@walletAddress = {{$dotenv WALLET_ADDRESS}}
+@trackedWalletId = {{$dotenv TRACKED_WALLET_ID}}
+@trackedWalletAddress = {{$dotenv TRACKED_WALLET_ADDRESS}}
+### Get all tracked wallets
+GET {{baseUrl}}/tracked_wallets
+
+### Add a new tracked wallet
+POST {{baseUrl}}/tracked_wallets
+Content-Type: application/json
+
+{
+    "wallet_address": "{{walletAddress}}",
+    "is_active": true
+}
+
+### Archive a tracked wallet
+PUT {{baseUrl}}/tracked_wallets/archive/{{trackedWalletAddress}}
+
+### Unarchive a tracked wallet
+PUT {{baseUrl}}/tracked_wallets/unarchive/{{trackedWalletAddress}}
+
+### Delete a tracked wallet
+DELETE {{baseUrl}}/tracked_wallets/{{trackedWalletAddress}}
+
+### Get copy trade settings
+GET {{baseUrl}}/copy_trade_settings
+
+### Create copy trade settings
+POST {{baseUrl}}/copy_trade_settings
+Content-Type: application/json
+
+{
+    "tracked_wallet_id": "{{trackedWalletId}}",
+    "is_enabled": true,
+    "trade_amount_sol": 0.001,
+    "max_slippage": 0.2,
+    "max_open_positions": 1,
+    "allow_additional_buys": false,
+    "match_sell_percentage": true,
+    "allowed_tokens": [],
+    "use_allowed_tokens_list": false,
+    "min_sol_balance": 0.001
+}
+
+### Update copy trade settings
+PUT {{baseUrl}}/copy_trade_settings
+Content-Type: application/json
+
+{
+    "tracked_wallet_id": "{{trackedWalletId}}",
+    "is_enabled": true,
+    "trade_amount_sol": 0.001,
+    "max_slippage": 0.2,
+    "max_open_positions": 2,
+    "allow_additional_buys": true,
+    "match_sell_percentage": true,
+    "allowed_tokens": [],
+    "use_allowed_tokens_list": false,
+    "min_sol_balance": 0.001
+}
+
+### Delete copy trade settings
+DELETE {{baseUrl}}/copy_trade_settings/{{trackedWalletId}}
+
+### Get transaction history
+GET {{baseUrl}}/transaction_history
+
+### Execute buy on pump.fun
+POST {{baseUrl}}/pump_fun/buy
+Content-Type: application/json
+
+{
+    "token_address": "YOUR_TOKEN_ADDRESS",
+    "sol_quantity": 0.001,
+    "slippage_tolerance": 0.2
+}
+
+### Execute sell on pump.fun
+POST {{baseUrl}}/pump_fun/sell
+Content-Type: application/json
+
+{
+    "token_address": "YOUR_TOKEN_ADDRESS",
+    "token_quantity": 1000,
+    "slippage_tolerance": 0.2
+}
+
+### Execute buy on Raydium
+POST {{baseUrl}}/raydium/buy
+Content-Type: application/json
+
+{
+    "token_address": "YOUR_TOKEN_ADDRESS",
+    "sol_quantity": 0.001,
+    "slippage_tolerance": 0.2
+}
+
+### Execute sell on Raydium
+POST {{baseUrl}}/raydium/sell
+Content-Type: application/json
+
+{
+    "token_address": "YOUR_TOKEN_ADDRESS",
+    "token_quantity": 1000,
+    "slippage_tolerance": 0.2
+}
