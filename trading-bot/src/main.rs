@@ -31,23 +31,25 @@ async fn main() -> Result<()> {
     }
     let user_id = server_keypair.pubkey().to_string();
 
+    // Create a single event system
+    let event_system = Arc::new(EventSystem::new());
+
     let supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
+        event_system.clone(), // Share the event system
     );
 
     let rpc_client = Arc::new(RpcClient::new(rpc_http_url));
 
-    let event_system = Arc::new(EventSystem::new());
-
-    // Initialize wallet manager
+    // Initialize wallet manager with the same event system
     let server_wallet_manager = Arc::new(tokio::sync::Mutex::new(
         ServerWalletManager::new(
             Arc::clone(&rpc_client),
             server_keypair.pubkey(),
-            event_system.clone(),
+            event_system.clone(), // Share the event system
         )
         .await
         .context("Failed to initialize ServerWalletManager")?,
@@ -70,13 +72,13 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Initialize and start wallet monitor
+    // Initialize wallet monitor with the same event system
     let mut monitor = WalletMonitor::new(
         Arc::clone(&rpc_client),
         rpc_ws_url,
         supabase_client,
         server_keypair,
-        event_system.clone(),
+        event_system.clone(), // Share the event system
         Arc::clone(&server_wallet_manager),
     )
     .await?;

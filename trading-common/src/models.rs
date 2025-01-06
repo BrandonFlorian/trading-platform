@@ -181,3 +181,35 @@ pub struct BuyTokenCalculations {
     pub max_token_output: f64,
     pub min_token_output: f64,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DatabaseOperationEvent {
+    pub operation_type: String, // "insert", "update", "delete", "select"
+    pub table: String,
+    pub success: bool,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ErrorEvent {
+    pub error_type: String,
+    pub message: String,
+    pub context: serde_json::Value,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DatabaseNotification {
+    pub data: DatabaseOperationEvent,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ErrorNotification {
+    pub data: ErrorEvent,
+    #[serde(rename = "type")]
+    pub type_: String,
+}

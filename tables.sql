@@ -3,7 +3,6 @@ DROP TABLE tracked_wallets cascade;
 DROP TABLE copy_trade_settings cascade;
 DROP TABLE transactions cascade;
 
-
 CREATE TABLE users (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
   wallet_address TEXT UNIQUE NOT NULL,
@@ -13,7 +12,7 @@ CREATE TABLE users (
 
 CREATE TABLE tracked_wallets (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-  user_id TEXT REFERENCES users(wallet_address),
+  user_id TEXT REFERENCES users(wallet_address) ON DELETE CASCADE,
   wallet_address TEXT NOT NULL,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -21,11 +20,10 @@ CREATE TABLE tracked_wallets (
   UNIQUE(user_id, wallet_address)
 );
 
-
 CREATE TABLE copy_trade_settings (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-  user_id TEXT REFERENCES users(wallet_address),
-  tracked_wallet_id UUID REFERENCES tracked_wallets(id),
+  user_id TEXT REFERENCES users(wallet_address) ON DELETE CASCADE,
+  tracked_wallet_id UUID REFERENCES tracked_wallets(id) ON DELETE CASCADE,
   is_enabled BOOLEAN DEFAULT false,
   trade_amount_sol DECIMAL(18, 9) NOT NULL,
   max_slippage DECIMAL(5, 2) DEFAULT 1.00,
@@ -42,7 +40,7 @@ CREATE TABLE copy_trade_settings (
 
 CREATE TABLE allowed_tokens (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-  user_id TEXT REFERENCES users(wallet_address),
+  user_id TEXT REFERENCES users(wallet_address) ON DELETE CASCADE,
   token_address TEXT NOT NULL,
   is_tradable BOOLEAN DEFAULT true,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -50,11 +48,10 @@ CREATE TABLE allowed_tokens (
   UNIQUE(user_id, token_address)
 );
 
-
 CREATE TABLE transactions (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-  user_id TEXT REFERENCES users(wallet_address),
-  tracked_wallet_id UUID REFERENCES tracked_wallets(id),
+  user_id TEXT REFERENCES users(wallet_address) ON DELETE CASCADE,
+  tracked_wallet_id UUID REFERENCES tracked_wallets(id) ON DELETE SET NULL,
   signature TEXT NOT NULL,
   transaction_type TEXT NOT NULL,
   token_address TEXT NOT NULL,

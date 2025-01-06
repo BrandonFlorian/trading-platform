@@ -24,6 +24,13 @@ use super::{
     utils::{derive_trading_accounts, ensure_token_account, get_bonding_curve_data},
 };
 
+pub struct SellResult {
+    pub signature: String,
+    pub token_amount: u64,
+    pub expected_sol_output: u64,
+    pub token_decimals: u8,
+}
+
 pub async fn sell(
     rpc_client: &RpcClient,
     secret_keypair: &impl Signer,
@@ -31,7 +38,7 @@ pub async fn sell(
     pump_fun_token_container: &PumpFunTokenContainer,
     token_quantity: f64,
     slippage: f64,
-) -> Result<String, AppError> {
+) -> Result<SellResult, AppError> {
     let user_address = secret_keypair.pubkey();
 
     println!(
@@ -39,40 +46,22 @@ pub async fn sell(
         secret_keypair.pubkey()
     );
 
-    // Get token holdings
+    // Get token holdings and decimals once
     let token_holdings = rpc_client
         .get_token_account_balance(&token_account_container.token_account_address.unwrap())?;
 
-    println!("Token account balance retrieved: {}", token_holdings.amount);
-
-    let token_balance = token_holdings.amount.parse::<u64>().unwrap();
     let token_decimals = token_holdings.decimals;
-
-    println!("Token balance: {} (smallest unit)", token_balance);
     println!("Token decimals: {}", token_decimals);
 
-    // Get bonding curve data from chain
+    // Get bonding curve data and calculate amounts
     let bonding_curve_data =
         get_bonding_curve_data(rpc_client, &pump_fun_token_container.mint_address).await?;
 
-    println!(
-        "Token Reserves for {}",
-        token_account_container.mint_address
-    );
-    println!(
-        "Virtual token reserves: {}",
-        bonding_curve_data.virtual_token_reserves
-    );
-    println!(
-        "Virtual sol reserves: {}",
-        bonding_curve_data.virtual_sol_reserves
-    );
-
-    // Calculate sell amounts
     let (token_amount, expected_sol_output) =
         bonding_curve_data.calculate_sell_amount(token_quantity, token_decimals);
     let min_sol_output = (expected_sol_output as f64 * (1.0 - slippage)) as u64;
 
+    // Log calculations
     println!(
         "Expected SOL output: {} SOL",
         expected_sol_output as f64 / LAMPORTS_PER_SOL as f64
@@ -102,7 +91,12 @@ pub async fn sell(
     match confirm_transaction(rpc_client, &signature, 20, 3).await {
         Ok(true) => {
             println!("Transaction confirmed successfully!");
-            Ok(signature.to_string())
+            Ok(SellResult {
+                signature: signature.to_string(),
+                token_amount,
+                expected_sol_output,
+                token_decimals,
+            })
         }
         Ok(false) => Err(AppError::ServerError(
             "Transaction failed during confirmation".to_string(),
@@ -227,14 +221,8 @@ pub async fn process_sell_request(
         ));
     }
 
-    // Get bonding curve data for price calculation
-    let bonding_curve_data = get_bonding_curve_data(rpc_client, &token_address).await?;
-    let (_, expected_sol_output) = bonding_curve_data.calculate_sell_amount(
-        request.token_quantity,
-        9, // Need to get decimals from chain
-    );
-
-    let signature = sell(
+    // Execute sell and get results
+    let sell_result = sell(
         rpc_client,
         server_keypair,
         &token_account_container,
@@ -246,10 +234,10 @@ pub async fn process_sell_request(
 
     Ok(SellResponse {
         success: true,
-        signature: signature.clone(),
+        signature: sell_result.signature.clone(),
         token_quantity: request.token_quantity,
-        sol_received: expected_sol_output as f64 / LAMPORTS_PER_SOL as f64,
-        solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
+        sol_received: sell_result.expected_sol_output as f64 / LAMPORTS_PER_SOL as f64,
+        solscan_tx_url: format!("https://solscan.io/tx/{}", sell_result.signature),
         error: None,
     })
 }

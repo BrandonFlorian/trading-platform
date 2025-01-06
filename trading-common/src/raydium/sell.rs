@@ -27,6 +27,11 @@ pub async fn process_sell_request(
 
     // Get pool info and market data
     let pool_info = get_pool_info(&request.token_address).await?;
+    println!(
+        "Pool info: price={}, mint_a={}, mint_b={}",
+        pool_info.price, pool_info.mint_a.address, pool_info.mint_b.address
+    );
+
     let pool_keys = get_pool_keys(&pool_info.id).await?;
     let pool_keys = PoolKeys::from(pool_keys);
 
@@ -38,19 +43,23 @@ pub async fn process_sell_request(
     };
     println!("Token decimals: {}", token_decimals);
 
-    // Calculate amounts using correct decimals
+    // Calculate amounts using correct decimals and inverse price
     let amount_in = (request.token_quantity * 10f64.powi(token_decimals)) as u64;
-    let expected_sol_output = pool_info.price * request.token_quantity;
-    let minimum_out = ((expected_sol_output * (1.0 - request.slippage_tolerance))
-        * LAMPORTS_PER_SOL as f64) as u64;
+
+    // Calculate inverse price (SOL per token) and adjust for lamports
+    let inverse_price = 1.0 / pool_info.price;
+    let expected_sol_output = (inverse_price * request.token_quantity) * LAMPORTS_PER_SOL as f64;
+    let minimum_out = (expected_sol_output * (1.0 - request.slippage_tolerance)) as u64;
 
     println!(
         "Sell calculation:\n\
          Amount in (raw): {}\n\
+         Price per token: {} SOL\n\
          Expected SOL out: {} SOL\n\
          Minimum SOL out: {} SOL",
         amount_in,
-        expected_sol_output,
+        inverse_price,
+        expected_sol_output / LAMPORTS_PER_SOL as f64,
         minimum_out as f64 / LAMPORTS_PER_SOL as f64
     );
 
