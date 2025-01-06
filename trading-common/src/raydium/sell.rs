@@ -143,7 +143,7 @@ pub async fn process_sell_request(
             success: true,
             signature: signature.to_string(),
             token_quantity: request.token_quantity,
-            sol_received: expected_sol_output,
+            sol_received: expected_sol_output / LAMPORTS_PER_SOL as f64,
             solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
             error: None,
         }),
