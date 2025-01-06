@@ -231,7 +231,7 @@ pub async fn process_sell_request(
     let bonding_curve_data = get_bonding_curve_data(rpc_client, &token_address).await?;
     let (_, expected_sol_output) = bonding_curve_data.calculate_sell_amount(
         request.token_quantity,
-        9, // Need to get decimals from chain
+        6, // Need to get decimals from chain
     );
 
     let signature = sell(
@@ -248,7 +248,7 @@ pub async fn process_sell_request(
         success: true,
         signature: signature.clone(),
         token_quantity: request.token_quantity,
-        sol_received: expected_sol_output as f64 / LAMPORTS_PER_SOL as f64,
+        sol_received: expected_sol_output as f64 / LAMPORTS_PER_SOL as f64, // Convert from lamports to SOL
         solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
         error: None,
     })

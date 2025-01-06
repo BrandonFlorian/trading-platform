@@ -22,6 +22,12 @@ use super::{
     utils::{derive_trading_accounts, ensure_token_account, get_bonding_curve_data},
 };
 
+pub struct BuyResult {
+    pub signature: String,
+    pub token_out: u64,
+    pub max_sol_cost: u64,
+}
+
 pub async fn buy(
     rpc_client: &RpcClient,
     secret_keypair: &impl Signer,
@@ -29,7 +35,7 @@ pub async fn buy(
     pump_fun_token_container: &PumpFunTokenContainer,
     sol_quantity: f64,
     slippage: f64,
-) -> Result<String, AppError> {
+) -> Result<BuyResult, AppError> {
     let user_address = secret_keypair.pubkey();
 
     // Validate slippage
@@ -54,9 +60,8 @@ pub async fn buy(
     let (token_out, sol_in_lamports) = bonding_curve_data.calculate_buy_amount(sol_quantity);
     let max_sol_cost = (sol_in_lamports as f64 * (1.0 + slippage)) as u64;
 
-    // Calculate min/max outputs for logging
-    let decimals = 9; // Most Solana tokens use 9 decimals
-    let max_token_output = token_out as f64 / 10f64.powi(decimals);
+    // Calculate display outputs for logging using pump.fun's 6 decimals
+    let max_token_output = token_out as f64 / 1e6;
     let min_token_output = max_token_output * (1.0 - slippage);
 
     println!(
@@ -93,7 +98,11 @@ pub async fn buy(
     match confirm_transaction(rpc_client, &signature, 20, 3).await {
         Ok(true) => {
             println!("Buy transaction confirmed successfully!");
-            Ok(signature.to_string())
+            Ok(BuyResult {
+                signature: signature.to_string(),
+                token_out,
+                max_sol_cost,
+            })
         }
         Ok(false) => Err(AppError::ServerError(
             "Transaction failed during confirmation".to_string(),
@@ -192,7 +201,6 @@ pub async fn process_buy_request(
 
     println!("Token address: {:?}", token_address);
 
-    // Create containers
     let pump_fun_token_container = PumpFunTokenContainer {
         mint_address: token_address,
         pump_fun_coin_data: None,
@@ -213,8 +221,8 @@ pub async fn process_buy_request(
         token_account_address: Some(token_account),
     };
 
-    // Execute buy
-    let signature = buy(
+    // Execute buy and get results
+    let buy_result = buy(
         rpc_client,
         server_keypair,
         &token_account_container,
@@ -224,16 +232,13 @@ pub async fn process_buy_request(
     )
     .await?;
 
-    // Get bonding curve data for calculations
-    let bonding_curve_data = get_bonding_curve_data(rpc_client, &token_address).await?;
-
-    let (token_out, _) = bonding_curve_data.calculate_buy_amount(request.sol_quantity);
-    let adjusted_token_output = token_out as f64 / 1e9; // Convert to human readable
+    // Convert to human readable with 6 decimals (pump.fun standard)
+    let adjusted_token_output = buy_result.token_out as f64 / 1e6;
 
     Ok(BuyResponse {
         success: true,
-        signature: signature.to_string(),
-        solscan_tx_url: format!("https://solscan.io/tx/{}", signature),
+        signature: buy_result.signature.clone(),
+        solscan_tx_url: format!("https://solscan.io/tx/{}", buy_result.signature),
         token_quantity: adjusted_token_output,
         sol_spent: request.sol_quantity,
         error: None,
