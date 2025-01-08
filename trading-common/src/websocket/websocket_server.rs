@@ -1,7 +1,8 @@
 use crate::{
     event_system::{Event, EventSystem},
-    models::WalletUpdate,
+    models::{TokenInfo, WalletUpdate},
     server_wallet_manager::ServerWalletManager,
+    wallet_client::WalletClient,
     CopyTradeSettings, SupabaseClient, TrackedWallet, TransactionLog,
 };
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
@@ -18,11 +19,11 @@ use tokio_tungstenite::{
 struct ConnectionContext {
     supabase_client: Arc<SupabaseClient>,
     event_system: Arc<EventSystem>,
-    server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+    wallet_client: Arc<WalletClient>,
 }
 pub struct WebSocketServer {
     event_system: Arc<EventSystem>,
-    server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+    wallet_client: Arc<WalletClient>,
     supabase_client: Arc<SupabaseClient>,
     port: u16,
 }
@@ -30,13 +31,13 @@ pub struct WebSocketServer {
 impl WebSocketServer {
     pub fn new(
         event_system: Arc<EventSystem>,
-        server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+        wallet_client: Arc<WalletClient>,
         supabase_client: Arc<SupabaseClient>,
         port: u16,
     ) -> Self {
         Self {
             event_system,
-            server_wallet_manager,
+            wallet_client,
             supabase_client,
             port,
         }
@@ -52,7 +53,7 @@ impl WebSocketServer {
             println!("New WebSocket connection from: {:?}", peer);
 
             let event_system = Arc::clone(&self.event_system);
-            let server_wallet_manager = Arc::clone(&self.server_wallet_manager);
+            let wallet_client = Arc::clone(&self.wallet_client);
             let supabase_client = Arc::clone(&self.supabase_client);
 
             tokio::spawn(async move {
@@ -61,7 +62,7 @@ impl WebSocketServer {
                         if let Err(e) = WebSocketServer::handle_connection(
                             ws_stream,
                             event_system,
-                            server_wallet_manager,
+                            wallet_client,
                             supabase_client,
                         )
                         .await
@@ -80,7 +81,7 @@ impl WebSocketServer {
     async fn handle_connection(
         ws_stream: WebSocketStream<TcpStream>,
         event_system: Arc<EventSystem>,
-        server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+        wallet_client: Arc<WalletClient>, // Changed parameter
         supabase_client: Arc<SupabaseClient>,
     ) -> Result<(), anyhow::Error> {
         let (mut ws_sender, mut ws_receiver) = ws_stream.split();
@@ -90,7 +91,7 @@ impl WebSocketServer {
         let context = ConnectionContext {
             supabase_client,
             event_system,
-            server_wallet_manager,
+            wallet_client,
         };
 
         loop {
@@ -229,8 +230,31 @@ impl WebSocketServer {
     }
 
     async fn get_initial_state(context: &ConnectionContext) -> Result<InitialState, anyhow::Error> {
-        let wallet_manager = context.server_wallet_manager.lock().await;
-        let server_wallet = wallet_manager.get_wallet_info();
+        // Get wallet info using gRPC client
+        let server_wallet_response = context
+            .wallet_client
+            .get_wallet_info()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get wallet info: {}", e))?;
+
+        // Convert WalletInfoResponse to WalletUpdate
+        let server_wallet = WalletUpdate {
+            balance: server_wallet_response.balance,
+            tokens: server_wallet_response
+                .tokens
+                .into_iter()
+                .map(|t| TokenInfo {
+                    address: t.address,
+                    symbol: t.symbol,
+                    name: t.name,
+                    balance: t.balance,
+                    metadata_uri: t.metadata_uri,
+                    decimals: t.decimals as u8,
+                    market_cap: t.market_cap,
+                })
+                .collect(),
+            address: server_wallet_response.address,
+        };
 
         let tracked_wallets = context.supabase_client.get_tracked_wallets().await?;
         let tracked_wallet = tracked_wallets.into_iter().find(|w| w.is_active);
@@ -320,7 +344,7 @@ impl WebSocketServer {
                 amount,
                 slippage,
             } => {
-                // Handle manual sell...
+                // TODO: Implement manual sell using wallet_client
                 let initial_state = Self::get_initial_state(context).await?;
 
                 ws_sender

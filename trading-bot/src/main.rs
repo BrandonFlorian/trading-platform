@@ -9,8 +9,7 @@ use tokio::signal;
 use trading_common::wallet_client::WalletClient;
 use trading_common::RedisConnection;
 use trading_common::{
-    database::SupabaseClient, event_system::EventSystem,
-    server_wallet_manager::ServerWalletManager, websocket::WebSocketServer,
+    database::SupabaseClient, event_system::EventSystem, websocket::WebSocketServer,
 };
 use wallet_monitor::WalletMonitor;
 
@@ -40,7 +39,7 @@ async fn main() -> Result<()> {
     let wallet_addr =
         std::env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
 
-    let wallet_client = WalletClient::connect(wallet_addr).await?;
+    let wallet_client = Arc::new(WalletClient::connect(wallet_addr).await?);
 
     // Subscribe to settings updates from the API
     println!("Setting up Redis subscription...");
@@ -63,42 +62,13 @@ async fn main() -> Result<()> {
 
     let rpc_client = Arc::new(RpcClient::new(rpc_http_url));
 
-    // Initialize wallet manager with the same event system
-    let server_wallet_manager = Arc::new(tokio::sync::Mutex::new(
-        ServerWalletManager::new(
-            Arc::clone(&rpc_client),
-            server_keypair.pubkey(),
-            event_system.clone(), // Share the event system
-        )
-        .await
-        .context("Failed to initialize ServerWalletManager")?,
-    ));
-
-    // Print initial wallet state
-    {
-        let wallet_manager = server_wallet_manager.lock().await;
-        println!("Server Wallet Address: {}", server_keypair.pubkey());
-        println!(
-            "SOL Balance: {} SOL",
-            wallet_manager.get_sol_balance().await?
-        );
-        println!("Token Balances:");
-        for token_info in wallet_manager.get_token_values() {
-            println!(
-                "  {}: {} {}",
-                token_info.name, token_info.balance, token_info.symbol
-            );
-        }
-    }
-
     let mut monitor = WalletMonitor::new(
         Arc::clone(&rpc_client),
         rpc_ws_url,
         Arc::clone(&supabase_client),
         server_keypair,
         event_system.clone(),
-        Arc::clone(&server_wallet_manager),
-        Arc::new(wallet_client),
+        Arc::clone(&wallet_client),
     )
     .await?;
 
@@ -108,12 +78,12 @@ async fn main() -> Result<()> {
 
     let ws_server = WebSocketServer::new(
         Arc::clone(&event_system),
-        Arc::clone(&server_wallet_manager),
+        Arc::clone(&wallet_client),
         supabase_client,
         websocket_port,
     );
 
-    // Start WebSocket server
+    //Start WebSocket server
     tokio::spawn(async move {
         if let Err(e) = ws_server.start().await {
             eprintln!("WebSocket server error: {}", e);

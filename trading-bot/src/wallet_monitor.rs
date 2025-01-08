@@ -37,18 +37,17 @@ pub struct WalletMonitor {
     message_receiver: Arc<Mutex<Option<mpsc::UnboundedReceiver<ClientTxInfo>>>>,
     stop_signal: Arc<tokio::sync::watch::Sender<bool>>,
     stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
-    server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
     wallet_client: Arc<WalletClient>,
 }
 
 pub struct MessageProcessorContext {
     event_system: Arc<EventSystem>,
     rpc_client: Arc<RpcClient>,
-    server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
     stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
     copy_trade_settings: Arc<RwLock<Option<Vec<CopyTradeSettings>>>>,
     message_receiver: mpsc::UnboundedReceiver<ClientTxInfo>,
     server_keypair: Keypair,
+    wallet_client: Arc<WalletClient>,
 }
 
 pub struct WebSocketContext {
@@ -66,7 +65,6 @@ impl WalletMonitor {
         supabase_client: Arc<SupabaseClient>,
         server_keypair: Keypair,
         event_system: Arc<EventSystem>,
-        server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
         wallet_client: Arc<WalletClient>,
     ) -> Result<Self> {
         let user_id = server_keypair.pubkey().to_string();
@@ -102,7 +100,6 @@ impl WalletMonitor {
             message_receiver: Arc::new(Mutex::new(Some(rx))),
             stop_signal: Arc::new(stop_tx),
             stop_receiver: Arc::new(stop_rx),
-            server_wallet_manager,
             wallet_client,
         })
     }
@@ -198,13 +195,14 @@ impl WalletMonitor {
         let context = MessageProcessorContext {
             event_system: Arc::clone(&self.event_system),
             rpc_client: Arc::clone(&self.rpc_client),
-            server_wallet_manager: Arc::clone(&self.server_wallet_manager),
+
             stop_receiver: Arc::clone(&self.stop_receiver),
             copy_trade_settings: Arc::clone(&self.copy_trade_settings),
             message_receiver: self.message_receiver.lock().take().ok_or_else(|| {
                 AppError::InitializationError("Message receiver not available".to_string())
             })?,
             server_keypair: get_server_keypair(),
+            wallet_client: Arc::clone(&self.wallet_client),
         };
 
         Ok(tokio::spawn(Self::run_message_processor(context)))
@@ -214,11 +212,11 @@ impl WalletMonitor {
         let MessageProcessorContext {
             event_system,
             rpc_client,
-            server_wallet_manager,
             stop_receiver,
             copy_trade_settings,
             mut message_receiver,
             server_keypair,
+            wallet_client,
         } = context;
 
         println!("Message processor started");
@@ -237,9 +235,9 @@ impl WalletMonitor {
                     &rpc_client,
                     &server_keypair,
                     &event_system,
-                    &server_wallet_manager,
                     &settings,
                     client_message,
+                    &wallet_client,
                 ).await {
                     println!("Error processing transaction: {}", e);
                 }
@@ -256,9 +254,9 @@ impl WalletMonitor {
         rpc_client: &Arc<RpcClient>,
         server_keypair: &Keypair,
         event_system: &Arc<EventSystem>,
-        server_wallet_manager: &Arc<tokio::sync::Mutex<ServerWalletManager>>,
         copy_trade_settings: &Option<Vec<CopyTradeSettings>>,
         client_message: ClientTxInfo,
+        wallet_client: &Arc<WalletClient>,
     ) -> Result<(), AppError> {
         println!("----------------------");
         println!("Handling transaction: {}", client_message.signature);
@@ -287,14 +285,33 @@ impl WalletMonitor {
                 match Self::process_copy_trade(
                     rpc_client,
                     server_keypair,
-                    server_wallet_manager,
                     settings,
                     &client_message,
+                    wallet_client,
                 )
                 .await
                 {
                     Ok(_) => {
-                        // Emit copy trade executed event after successful execution
+                        // Let the wallet service know about the trade
+                        let trade_request = trading_common::proto::wallet::TradeExecutionRequest {
+                            signature: client_message.signature.clone(),
+                            token_address: client_message.token_address.clone(),
+                            token_name: client_message.token_name.clone(),
+                            token_symbol: client_message.token_symbol.clone(),
+                            transaction_type: format!("{:?}", client_message.transaction_type),
+                            amount_token: client_message.amount_token,
+                            amount_sol: client_message.amount_sol,
+                            price_per_token: client_message.price_per_token,
+                            token_image_uri: client_message.token_image_uri.clone(),
+                        };
+
+                        wallet_client
+                            .handle_trade_execution(trade_request)
+                            .await
+                            .map_err(|e| {
+                                AppError::ServerError(format!("Failed to update wallet: {}", e))
+                            })?;
+
                         event_system
                             .handle_copy_trade_executed(CopyTradeNotification {
                                 data: client_message.clone(),
@@ -348,11 +365,18 @@ impl WalletMonitor {
     async fn process_copy_trade(
         rpc_client: &Arc<RpcClient>,
         server_keypair: &Keypair,
-        server_wallet_manager: &Arc<tokio::sync::Mutex<ServerWalletManager>>,
         settings: &CopyTradeSettings,
         client_message: &ClientTxInfo,
+        wallet_client: &Arc<WalletClient>,
     ) -> Result<(), AppError> {
-        if !should_copy_trade(client_message, settings, server_wallet_manager).await? {
+        // Check if we should copy trade
+        let wallet_info = wallet_client
+            .get_wallet_info()
+            .await
+            .map_err(|e| AppError::ServerError(format!("Failed to get wallet info: {}", e)))?;
+
+        // Logic for should_copy_trade would need to be adapted to use wallet_info
+        if !should_copy_trade(client_message, settings, &wallet_info).await? {
             return Ok(());
         }
 
@@ -367,14 +391,6 @@ impl WalletMonitor {
         .map_err(|e| {
             AppError::MessageProcessingError(format!("Execute copy trade failed: {}", e))
         })?;
-
-        let mut wallet_manager = server_wallet_manager.lock().await;
-        wallet_manager
-            .handle_trade_execution(client_message)
-            .await
-            .map_err(|e| {
-                AppError::MessageProcessingError(format!("Wallet update failed: {}", e))
-            })?;
 
         Ok(())
     }

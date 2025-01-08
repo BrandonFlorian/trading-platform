@@ -7,21 +7,20 @@ use std::sync::Arc;
 
 use crate::dex::DexType;
 use crate::models::SellRequest;
-use crate::pumpdotfun;
 use crate::raydium;
 use crate::utils::data::get_token_balance;
-use crate::wallet::server_wallet_manager::ServerWalletManager;
 use crate::{models::BuyRequest, ClientTxInfo, CopyTradeSettings, TransactionType};
+use crate::{pumpdotfun, WalletInfoResponse};
+
 pub async fn should_copy_trade(
     tx_info: &ClientTxInfo,
     settings: &CopyTradeSettings,
-    server_wallet_manager: &Arc<tokio::sync::Mutex<ServerWalletManager>>,
+    wallet_info: &WalletInfoResponse,
 ) -> Result<bool> {
     // Token allowlist check
     if settings.use_allowed_tokens_list {
         if let Some(allowed_tokens) = &settings.allowed_tokens {
             if !allowed_tokens.contains(&tx_info.token_address) {
-                println!("Token not in allowed list: {}", tx_info.token_address);
                 return Ok(false);
             }
         }
@@ -29,10 +28,8 @@ pub async fn should_copy_trade(
 
     match tx_info.transaction_type {
         TransactionType::Buy => {
-            // Check if the current number of open positions is less than max allowed
-            let wallet_manager = Arc::clone(server_wallet_manager);
-            let manager = wallet_manager.lock().await;
-            let current_positions = manager.get_tokens().len();
+            // Check current positions using wallet_info
+            let current_positions = wallet_info.tokens.len();
 
             if current_positions >= settings.max_open_positions as usize {
                 println!(
@@ -44,14 +41,18 @@ pub async fn should_copy_trade(
 
             if !settings.allow_additional_buys {
                 // Check if we already hold this token
-                if manager.get_tokens().contains_key(&tx_info.token_address) {
+                if wallet_info
+                    .tokens
+                    .iter()
+                    .any(|t| t.address == tx_info.token_address)
+                {
                     println!("Additional buys not allowed and token already held");
                     return Ok(false);
                 }
             }
         }
         TransactionType::Sell => {
-            // Sell-specific validation goes here
+            // Sell-specific validation
         }
         _ => return Ok(false),
     }
