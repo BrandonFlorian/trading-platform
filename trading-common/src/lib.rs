@@ -19,6 +19,8 @@ pub mod events {
     pub mod event_system;
 }
 
+pub mod redis_connection;
+
 pub use constants::{
     ASSOCIATED_TOKEN_PROGRAM_ID, EVENT_AUTHORITY, FEE_RECIPIENT, GLOBAL, OPEN_BOOK_PROGRAM,
     PUMP_FUN_PROGRAM_ID, RAY_AUTHORITY_V4, RAY_V4, RENT, SYSTEM_PROGRAM, TOKEN_KEG_PROGRAM_ID,
@@ -29,5 +31,7 @@ pub use events::*;
 pub use models::{ClientTxInfo, CopyTradeSettings, TrackedWallet, TransactionLog, TransactionType};
 pub use pumpdotfun::{buy, process_buy_request, process_sell_request, sell, types};
 pub use raydium::*;
+pub use redis_connection::*;
 pub use utils::*;
 pub use wallet::*;
+pub use websocket::*;

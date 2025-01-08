@@ -115,6 +115,13 @@ pub struct TrackedWalletNotification {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SettingsUpdateNotification {
+    pub data: CopyTradeSettings,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransactionLoggedNotification {
     pub data: TransactionLog,
     #[serde(rename = "type")]
@@ -122,8 +129,15 @@ pub struct TransactionLoggedNotification {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WalletUpdate {
+    pub balance: f64,
+    pub tokens: Vec<TokenInfo>,
+    pub address: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WalletUpdateNotification {
-    pub data: serde_json::Value,
+    pub data: WalletUpdate,
     #[serde(rename = "type")]
     pub type_: String,
 }
@@ -212,4 +226,15 @@ pub struct ErrorNotification {
     pub data: ErrorEvent,
     #[serde(rename = "type")]
     pub type_: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TokenInfo {
+    pub address: String,
+    pub symbol: String,
+    pub name: String,
+    pub balance: String,
+    pub metadata_uri: Option<String>,
+    pub decimals: u8,
+    pub market_cap: f64,
 }

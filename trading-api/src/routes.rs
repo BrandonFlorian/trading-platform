@@ -100,13 +100,26 @@ pub async fn create_copy_trade_settings(
 }
 
 pub async fn update_copy_trade_settings(
-    State(state): State<AppState>,
+    State(mut state): State<AppState>,
     Json(settings): Json<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    println!("update_copy_trade_settings() called");
     let result = state
         .supabase_client
-        .update_copy_trade_settings(settings)
+        .update_copy_trade_settings(settings.clone())
         .await?;
+    println!("update_copy_trade_settings() result: {:?}", result);
+    println!(
+        "Attempting to publish update_copy_trade_settings() settings: {:?}",
+        settings
+    );
+    state
+        .redis_connection
+        .publish_settings_update(&settings)
+        .await
+        .map_err(|e| AppError::RedisError(e.to_string()))?;
+    println!("update_copy_trade_settings() published settings");
+
     Ok(Json(json!({ "success": true, "settings_id": result })))
 }
 

@@ -93,6 +93,9 @@ pub enum AppError {
     #[error("Task error: {0}")]
     TaskError(String),
 
+    #[error("Redis error: {0}")]
+    RedisError(String),
+
     #[error("{0}")]
     Generic(String),
 }
@@ -130,6 +133,7 @@ impl IntoResponse for AppError {
             AppError::InitializationError(message) => (StatusCode::BAD_REQUEST, message),
             AppError::MessageProcessingError(message) => (StatusCode::BAD_REQUEST, message),
             AppError::TaskError(message) => (StatusCode::BAD_REQUEST, message),
+            AppError::RedisError(message) => (StatusCode::BAD_REQUEST, message),
         };
 
         let body = serde_json::json!({
