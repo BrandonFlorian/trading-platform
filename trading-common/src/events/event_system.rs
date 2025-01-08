@@ -4,8 +4,8 @@ use tokio::sync::broadcast;
 
 use crate::models::{
     CopyTradeNotification, DatabaseNotification, DatabaseOperationEvent, ErrorEvent,
-    ErrorNotification, TrackedWalletNotification, TransactionLoggedNotification,
-    WalletUpdateNotification,
+    ErrorNotification, SettingsUpdateNotification, TrackedWalletNotification,
+    TransactionLoggedNotification, WalletUpdateNotification,
 };
 
 #[derive(Clone)]
@@ -16,6 +16,7 @@ pub enum Event {
     TransactionLogged(TransactionLoggedNotification),
     DatabaseOperation(DatabaseNotification),
     Error(ErrorNotification),
+    SettingsUpdate(SettingsUpdateNotification),
 }
 pub struct EventSystem {
     sender: broadcast::Sender<Event>,
@@ -45,6 +46,10 @@ impl EventSystem {
 
     pub async fn handle_tracked_wallet_trade(&self, notification: TrackedWalletNotification) {
         self.emit(Event::TrackedWalletTransaction(notification));
+    }
+
+    pub async fn handle_settings_update(&self, notification: SettingsUpdateNotification) {
+        self.emit(Event::SettingsUpdate(notification));
     }
 
     pub async fn handle_wallet_updated(&self, notification: WalletUpdateNotification) {

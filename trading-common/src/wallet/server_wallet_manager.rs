@@ -1,5 +1,5 @@
 use crate::event_system::{Event, EventSystem};
-use crate::models::WalletUpdateNotification;
+use crate::models::{TokenInfo, WalletUpdate, WalletUpdateNotification};
 use crate::utils::data::{
     extract_token_account_info, format_balance, format_token_amount, get_metadata,
 };
@@ -13,17 +13,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use surf::Client;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TokenInfo {
-    pub address: String,
-    pub symbol: String,
-    pub name: String,
-    pub balance: String,
-    pub metadata_uri: Option<String>,
-    pub decimals: u8,
-    pub market_cap: f64,
-}
 
 pub struct ServerWalletManager {
     rpc_client: Arc<RpcClient>,
@@ -154,11 +143,12 @@ impl ServerWalletManager {
         self.event_system.emit(Event::WalletUpdate(notification));
     }
 
-    pub fn get_wallet_info(&self) -> serde_json::Value {
-        serde_json::json!({
-            "balance": self.balance,
-            "tokens": self.tokens.values().collect::<Vec<_>>(),
-        })
+    pub fn get_wallet_info(&self) -> WalletUpdate {
+        WalletUpdate {
+            balance: self.balance,
+            tokens: self.tokens.values().cloned().collect(),
+            address: self.public_key.to_string(),
+        }
     }
 
     // Helper methods for querying state

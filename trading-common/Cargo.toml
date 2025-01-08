@@ -33,3 +33,4 @@ bytemuck = { workspace = true }
 tokio-tungstenite = { workspace = true }
 backoff = { workspace = true }
 tokio-native-tls = { workspace = true }
+redis = { workspace = true }

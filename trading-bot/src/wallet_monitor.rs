@@ -10,7 +10,7 @@ use trading_common::{
     data::get_server_keypair,
     database::SupabaseClient,
     error::AppError,
-    event_system::EventSystem,
+    event_system::{Event, EventSystem},
     models::{
         ClientTxInfo, CopyTradeNotification, CopyTradeSettings, TrackedWallet,
         TrackedWalletNotification, TransactionLoggedNotification,
@@ -21,7 +21,7 @@ use trading_common::{
         transaction::process_websocket_message,
     },
     websocket::{WebSocketConfig, WebSocketConnectionManager},
-    TransactionLog,
+    RedisConnection, TransactionLog,
 };
 use uuid::Uuid;
 
@@ -61,7 +61,7 @@ impl WalletMonitor {
     pub async fn new(
         rpc_client: Arc<RpcClient>,
         ws_url: String,
-        supabase_client: SupabaseClient,
+        supabase_client: Arc<SupabaseClient>,
         server_keypair: Keypair,
         event_system: Arc<EventSystem>,
         server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
@@ -131,6 +131,8 @@ impl WalletMonitor {
         let message_processor = self.start_message_processor().await?;
         let websocket_monitor = self.start_websocket_monitor().await?;
 
+        // Subscribe to events from the API
+        let mut event_rx = self.event_system.subscribe();
         println!("WalletMonitor started successfully. Waiting for tasks...");
 
         // Wait for both tasks to complete or stop signal
@@ -141,6 +143,27 @@ impl WalletMonitor {
                     if result.is_ok() && *rx.borrow() {
                         println!("Stop signal received, shutting down...");
                         break;
+                    }
+                }
+                Ok(event) = event_rx.recv() => {
+                    match event {
+                        Event::SettingsUpdate(notification) => {
+                            println!("Event - Received settings update: {:?}", notification.data);
+                            // Update copy trade settings in memory
+                            if let Some(settings_store) = self.copy_trade_settings.write().as_mut() {
+                                if let Some(existing) = settings_store.iter_mut()
+                                    .find(|s| s.tracked_wallet_id == notification.data.tracked_wallet_id)
+                                {
+                                *existing = notification.data;
+                            } else {
+                                settings_store.push(notification.data);
+                                }
+                            }
+                        }
+                        Event::TransactionLogged(notification) => {
+                            println!("Event - Received transaction logged: {:?}", notification.data);
+                        }
+                        _ => {}
                     }
                 }
                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {

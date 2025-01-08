@@ -10,13 +10,17 @@ use solana_sdk::signer::Signer;
 use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
-use trading_common::{data::get_server_keypair, event_system::EventSystem, SupabaseClient};
+use trading_common::{
+    data::get_server_keypair, event_system::EventSystem, redis_connection::RedisConnection,
+    SupabaseClient,
+};
 mod routes;
 
 #[derive(Clone)]
 struct AppState {
     rpc_client: Arc<ArcSwap<RpcClient>>,
     supabase_client: SupabaseClient,
+    redis_connection: RedisConnection,
 }
 
 #[tokio::main]
@@ -31,6 +35,7 @@ async fn main() -> Result<()> {
         env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
 
     let rpc_url = env::var("SOLANA_RPC_HTTP_URL").context("SOLANA_RPC_HTTP_URL must be set")?;
+    let redis_url = env::var("REDIS_URL").context("REDIS_URL must be set")?;
     println!("rpc_url: {}", rpc_url);
 
     let server_keypair = get_server_keypair();
@@ -50,9 +55,12 @@ async fn main() -> Result<()> {
     let rpc_client = RpcClient::new(rpc_url);
     let shared_rpc_client = Arc::new(ArcSwap::from_pointee(rpc_client));
 
+    let redis_connection = RedisConnection::new(&redis_url).await.unwrap();
+
     let state = AppState {
         rpc_client: shared_rpc_client,
         supabase_client,
+        redis_connection,
     };
 
     let app = Router::new()

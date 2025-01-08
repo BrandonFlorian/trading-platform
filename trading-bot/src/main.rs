@@ -6,9 +6,12 @@ use solana_sdk::signer::Signer;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{env, sync::Arc};
 use tokio::signal;
-use trading_common::database::SupabaseClient;
-use trading_common::event_system::EventSystem;
-use trading_common::server_wallet_manager::ServerWalletManager;
+use trading_common::RedisConnection;
+use trading_common::{
+    database::SupabaseClient, event_system::EventSystem,
+    server_wallet_manager::ServerWalletManager, websocket::WebSocketServer,
+};
+
 use wallet_monitor::WalletMonitor;
 
 #[tokio::main]
@@ -24,7 +27,7 @@ async fn main() -> Result<()> {
         env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
     let supabase_service_role_key =
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
-
+    let redis_url = env::var("REDIS_URL").context("REDIS_URL must be set")?;
     let server_keypair = Keypair::from_base58_string(&server_secret_key);
     if server_keypair.pubkey() == Pubkey::default() {
         return Err(anyhow::anyhow!("Invalid server secret key"));
@@ -34,13 +37,24 @@ async fn main() -> Result<()> {
     // Create a single event system
     let event_system = Arc::new(EventSystem::new());
 
-    let supabase_client = SupabaseClient::new(
+    // Subscribe to settings updates from the API
+    println!("Setting up Redis subscription...");
+    if let Err(e) =
+        RedisConnection::subscribe_to_settings_updates(&redis_url, event_system.clone()).await
+    {
+        eprintln!("Failed to set up Redis subscription: {}", e);
+        // Don't fail startup, just log the error
+    } else {
+        println!("Redis subscription set up successfully");
+    }
+
+    let supabase_client = Arc::new(SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
-        event_system.clone(), // Share the event system
-    );
+        event_system.clone(),
+    ));
 
     let rpc_client = Arc::new(RpcClient::new(rpc_http_url));
 
@@ -72,16 +86,35 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Initialize wallet monitor with the same event system
     let mut monitor = WalletMonitor::new(
         Arc::clone(&rpc_client),
         rpc_ws_url,
-        supabase_client,
+        Arc::clone(&supabase_client),
         server_keypair,
-        event_system.clone(), // Share the event system
+        event_system.clone(),
         Arc::clone(&server_wallet_manager),
     )
     .await?;
+
+    let websocket_port = env::var("WS_PORT")
+        .unwrap_or_else(|_| "3001".to_string())
+        .parse()?;
+
+    let ws_server = WebSocketServer::new(
+        Arc::clone(&event_system),
+        Arc::clone(&server_wallet_manager),
+        supabase_client,
+        websocket_port,
+    );
+
+    // Start WebSocket server
+    tokio::spawn(async move {
+        if let Err(e) = ws_server.start().await {
+            eprintln!("WebSocket server error: {}", e);
+        }
+    });
+
+    println!("WebSocket server started on port {}", websocket_port);
 
     let mut shutdown_monitor = monitor.clone();
 
