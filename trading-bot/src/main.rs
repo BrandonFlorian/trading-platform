@@ -38,11 +38,14 @@ async fn main() -> Result<()> {
     let event_system = Arc::new(EventSystem::new());
 
     // Subscribe to settings updates from the API
+    println!("Setting up Redis subscription...");
     if let Err(e) =
         RedisConnection::subscribe_to_settings_updates(&redis_url, event_system.clone()).await
     {
         eprintln!("Failed to set up Redis subscription: {}", e);
         // Don't fail startup, just log the error
+    } else {
+        println!("Redis subscription set up successfully");
     }
 
     let supabase_client = Arc::new(SupabaseClient::new(
