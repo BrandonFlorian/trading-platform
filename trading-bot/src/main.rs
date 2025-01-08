@@ -6,12 +6,12 @@ use solana_sdk::signer::Signer;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{env, sync::Arc};
 use tokio::signal;
+use trading_common::wallet_client::WalletClient;
 use trading_common::RedisConnection;
 use trading_common::{
     database::SupabaseClient, event_system::EventSystem,
     server_wallet_manager::ServerWalletManager, websocket::WebSocketServer,
 };
-
 use wallet_monitor::WalletMonitor;
 
 #[tokio::main]
@@ -36,6 +36,11 @@ async fn main() -> Result<()> {
 
     // Create a single event system
     let event_system = Arc::new(EventSystem::new());
+
+    let wallet_addr =
+        std::env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
+
+    let wallet_client = WalletClient::connect(wallet_addr).await?;
 
     // Subscribe to settings updates from the API
     println!("Setting up Redis subscription...");
@@ -93,6 +98,7 @@ async fn main() -> Result<()> {
         server_keypair,
         event_system.clone(),
         Arc::clone(&server_wallet_manager),
+        Arc::new(wallet_client),
     )
     .await?;
 

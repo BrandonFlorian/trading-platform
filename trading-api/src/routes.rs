@@ -1,6 +1,7 @@
 use crate::AppState;
 use axum::{
     extract::{Path, State},
+    response::{IntoResponse, Response},
     Json,
 };
 use chrono::Utc;
@@ -18,6 +19,16 @@ use trading_common::{
     CopyTradeSettings, TrackedWallet, TransactionLog,
 };
 use uuid::Uuid;
+
+pub async fn get_wallet_info(State(state): State<AppState>) -> Result<Response, AppError> {
+    let response = state
+        .wallet_client
+        .get_wallet_info()
+        .await
+        .map_err(|e| AppError::ServerError(format!("Failed to get wallet info: {}", e)))?;
+
+    Ok(Json(response).into_response())
+}
 
 pub async fn get_tracked_wallets(
     State(state): State<AppState>,

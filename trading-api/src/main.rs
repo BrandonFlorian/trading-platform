@@ -10,6 +10,7 @@ use solana_sdk::signer::Signer;
 use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
+use trading_common::wallet_client::WalletClient;
 use trading_common::{
     data::get_server_keypair, event_system::EventSystem, redis_connection::RedisConnection,
     SupabaseClient,
@@ -21,6 +22,7 @@ struct AppState {
     rpc_client: Arc<ArcSwap<RpcClient>>,
     supabase_client: SupabaseClient,
     redis_connection: RedisConnection,
+    wallet_client: WalletClient,
 }
 
 #[tokio::main]
@@ -44,6 +46,10 @@ async fn main() -> Result<()> {
 
     let event_system = Arc::new(EventSystem::new());
 
+    let wallet_service_url =
+        env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
+    let wallet_client = WalletClient::connect(wallet_service_url).await?;
+
     let supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
@@ -61,9 +67,11 @@ async fn main() -> Result<()> {
         rpc_client: shared_rpc_client,
         supabase_client,
         redis_connection,
+        wallet_client,
     };
 
     let app = Router::new()
+        .route("/wallet/info", get(routes::get_wallet_info))
         .route("/tracked_wallets", get(routes::get_tracked_wallets))
         .route("/tracked_wallets", post(routes::add_tracked_wallet))
         .route(

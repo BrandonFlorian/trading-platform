@@ -1,0 +1,66 @@
+syntax = "proto3";
+package wallet;
+
+service WalletService {
+    // Get current wallet state
+    rpc GetWalletInfo (WalletInfoRequest) returns (WalletInfoResponse);
+    
+    // Update wallet state after trade
+    rpc HandleTradeExecution (TradeExecutionRequest) returns (TradeExecutionResponse);
+    
+    // Stream wallet updates
+    rpc SubscribeToUpdates (SubscribeRequest) returns (stream WalletUpdate);
+    
+    // Refresh wallet balances
+    rpc RefreshBalances (RefreshBalancesRequest) returns (RefreshBalancesResponse);
+}
+
+message WalletInfoRequest {}
+
+message TokenInfo {
+    string address = 1;
+    string symbol = 2;
+    string name = 3;
+    string balance = 4;
+    optional string metadata_uri = 5;
+    uint32 decimals = 6;
+    double market_cap = 7;
+}
+
+message WalletInfoResponse {
+    double balance = 1;
+    repeated TokenInfo tokens = 2;
+    string address = 3;
+}
+
+message TradeExecutionRequest {
+    string signature = 1;
+    string token_address = 2;
+    string token_name = 3;
+    string token_symbol = 4;
+    string transaction_type = 5;
+    double amount_token = 6;
+    double amount_sol = 7;
+    double price_per_token = 8;
+    string token_image_uri = 9;
+}
+
+message TradeExecutionResponse {
+    bool success = 1;
+    optional string error = 2;
+}
+
+message SubscribeRequest {}
+
+message WalletUpdate {
+    double balance = 1;
+    repeated TokenInfo tokens = 2;
+    string address = 3;
+}
+
+message RefreshBalancesRequest {}
+
+message RefreshBalancesResponse {
+    bool success = 1;
+    optional string error = 2;
+}

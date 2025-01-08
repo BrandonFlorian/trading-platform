@@ -20,8 +20,9 @@ use trading_common::{
         copy_trade::{execute_copy_trade, should_copy_trade},
         transaction::process_websocket_message,
     },
+    wallet_client::WalletClient,
     websocket::{WebSocketConfig, WebSocketConnectionManager},
-    RedisConnection, TransactionLog,
+    TransactionLog,
 };
 use uuid::Uuid;
 
@@ -37,6 +38,7 @@ pub struct WalletMonitor {
     stop_signal: Arc<tokio::sync::watch::Sender<bool>>,
     stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
     server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+    wallet_client: Arc<WalletClient>,
 }
 
 pub struct MessageProcessorContext {
@@ -65,6 +67,7 @@ impl WalletMonitor {
         server_keypair: Keypair,
         event_system: Arc<EventSystem>,
         server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+        wallet_client: Arc<WalletClient>,
     ) -> Result<Self> {
         let user_id = server_keypair.pubkey().to_string();
         println!("Initializing WalletMonitor for user: {}", user_id);
@@ -100,6 +103,7 @@ impl WalletMonitor {
             stop_signal: Arc::new(stop_tx),
             stop_receiver: Arc::new(stop_rx),
             server_wallet_manager,
+            wallet_client,
         })
     }
 

@@ -15,7 +15,7 @@ const MAX_RETRIES: u32 = 5;
 
 #[derive(Clone)]
 pub struct RedisConnection {
-    client: Client,
+    _client: Client,
     connection: ConnectionManager,
 }
 
@@ -39,7 +39,10 @@ impl RedisConnection {
             .await
             .map_err(|e| AppError::Generic(format!("Failed to create Redis connection: {}", e)))?;
 
-        Ok(Self { client, connection })
+        Ok(Self {
+            _client: client,
+            connection,
+        })
     }
 
     pub async fn publish_settings_update(

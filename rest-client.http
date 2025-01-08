@@ -5,6 +5,9 @@
 @pumpFunTokenAddress = {{$dotenv PUMP_FUN_TOKEN_ADDRESS}}
 @raydiumTokenAddress = {{$dotenv RAYDIUM_TOKEN_ADDRESS}}
 
+### Get server wallet info
+GET {{baseUrl}}/wallet/info
+
 ### Get all tracked wallets
 GET {{baseUrl}}/tracked_wallets
 

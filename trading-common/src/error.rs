@@ -6,7 +6,6 @@ use solana_client::client_error::ClientError;
 use solana_sdk::{program_error::ProgramError, pubkey::ParsePubkeyError};
 use thiserror::Error;
 use tokio::sync::mpsc;
-
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Database error: {0}")]
@@ -134,6 +133,7 @@ impl IntoResponse for AppError {
             AppError::MessageProcessingError(message) => (StatusCode::BAD_REQUEST, message),
             AppError::TaskError(message) => (StatusCode::BAD_REQUEST, message),
             AppError::RedisError(message) => (StatusCode::BAD_REQUEST, message),
+            AppError::ServerError(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
 
         let body = serde_json::json!({
@@ -178,5 +178,17 @@ impl<T> From<mpsc::error::SendError<T>> for AppError {
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
         AppError::Generic(err.to_string())
+    }
+}
+
+impl From<tonic::Status> for AppError {
+    fn from(status: tonic::Status) -> Self {
+        AppError::ServerError(format!("gRPC error: {}", status))
+    }
+}
+
+impl From<tonic::transport::Error> for AppError {
+    fn from(error: tonic::transport::Error) -> Self {
+        AppError::ServerError(format!("gRPC transport error: {}", error))
     }
 }

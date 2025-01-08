@@ -4,111 +4,170 @@ NOTE: This project is currently under development and not all functionality is a
 
 This project is a Solana-based trading bot and API system, designed to monitor specific wallets on the Solana blockchain and execute trades based on user-defined settings.
 
-The platform is a rebuild of my first attempt at a trading bot, which was built in Python. This version is being built with Rust and is designed to be more efficient and easier to maintain.
+## Architecture Overview
 
-The front end is a Next.js app that can be found [here](https://github.com/BrandonFlorian/solana-tools-client). It was originally built for the python version that can be found [here](https://github.com/BrandonFlorian/solana-tools-server) but will work for both. Python version is currently a private repo and you will need to contact me for access.
-
-The front end has not been updated in a while, and is next on my todo list. If not working, please use the API directly until then and add your settings that way.
-
-## Project Structure
-
-The project is organized as a Rust workspace with three main components:
+The project is organized as a Rust workspace with four main components:
 
 1. `trading-common`: Core functionality and shared components
 
-   - Models and types
+   - Shared models and types
    - Database interactions (Supabase)
-   - Event system
-   - Server wallet management
-   - Copy trade logic
-   - Transaction processing utilities
+   - Event system for real-time updates
+   - gRPC protocol definitions
+   - DEX integration utilities (pump.fun, Raydium)
+   - Transaction processing and validation
 
 2. `trading-api`: REST API server
 
    - CRUD operations for tracked wallets and settings
    - Trade execution endpoints
-   - Integration with both pump.fun and Raydium DEXs
-   - Real-time wallet status updates
+   - Multi-DEX integration endpoints
+   - WebSocket server for real-time updates
+   - Redis-based event broadcasting
 
 3. `trading-bot`: Core trading engine
+
    - WebSocket-based wallet monitoring
    - Automated copy trading execution
    - Real-time balance tracking
    - Event-driven architecture
+   - Redis subscription for settings updates
 
-## Features
+4. `trading-wallet`: Wallet management service
+   - gRPC-based wallet operations
+   - Centralized wallet state management
+   - Token balance tracking
+   - Transaction execution
+   - Real-time balance updates
+
+## Key Features
+
+### Copy Trading
 
 - Real-time wallet monitoring via WebSocket
-- Copy trading with customizable settings:
+- Customizable trading parameters:
   - Maximum open positions
-  - Trade amount per position
+  - Per-position trade amount
   - Slippage tolerance
-  - Allowed tokens list
+  - Allowed tokens whitelist
   - Additional buy settings
-- Support for multiple DEXs:
-  - pump.fun
-  - Raydium
+  - Minimum balance requirements
+
+### Multi-DEX Support
+
+- pump.fun integration
+- Raydium integration
+- Remaining DEXs to be added soon
+- Unified trading interface
+- DEX-specific optimizations
+
+### System Features
+
+- Event-driven architecture
+- Real-time updates via WebSocket
+- gRPC-based wallet management
+- Redis-based settings propagation
 - Automatic token balance tracking
 - Graceful shutdown handling
-- Robust error handling and retry logic
-- Event-based system for real-time updates
+- Comprehensive error handling and retry logic
 
 ## Prerequisites
 
 - Rust (latest stable version)
-- Cargo (comes with Rust)
+- Cargo
 - Solana CLI tools
+- Redis server
 - Supabase account and project
-- Secret key for the server wallet (this should be a fresh wallet, not used for anything else)
-- Helius RPC node access (or equivalent Solana RPC provider)
+- Dedicated server wallet (fresh Solana wallet)
+- Helius RPC node (or equivalent Solana RPC provider)
+- Protocol Buffers compiler (protoc)
+- docker and docker-compose
+- protobuf
+
+## Protocol Buffers (gRPC) Setup
+
+The project uses gRPC for communication between services and the wallet manager. The protocol definitions are located in:
+
+```bash
+trading-common/proto/wallet.proto
+```
+
+When you build the project:
+
+1. The build script (`trading-common/build.rs`) automatically compiles the proto definitions
+
+2. Generated code is placed in `trading-common/src/generated/wallet.rs`
+
+3. This generated code is then available to all services through `trading-common`
+
+### Proto Recompilation
+
+If you modify the `wallet.proto` file, the code will automatically regenerate during the next build. You can also force regeneration with:
+
+````bash
+cargo clean -p trading-common
+cargo build
 
 ## Setup
 
 1. Clone the repository:
 
-```
+```bash
 git clone https://github.com/yourusername/solana-trading-project.git
 cd solana-trading-project
-```
+````
 
 2. Set up environment variables:
 
-Create a `.env` file in the root directory and add the following (replace with your actual values):
-
-```
-#SOLANA
-SOLANA_RPC_HTTP_URL=
-SOLANA_RPC_WS_URL=
-
-#SUPABASE
-SUPABASE_URL=
-
-SUPABASE_API_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-SUPABASE_ANON_PUBLIC_KEY=
-
-
-#WALLET
-SERVER_WALLET_SECRET_KEY=
-TRACKED_WALLET_ID=
-
-#PORTS
-WS_PORT=
-API_PORT=
-
+```bash
+cp .env.example .env
 ```
 
 3. Build the project:
 
-```
-cargo build
+```bash
+cargo build --workspace
 ```
 
 ## Running the Project
 
+1. Start the redis server:
+
+```bash
+docker-compose up -d redis
+```
+
+Verify that the redis server is running:
+
+```bash
+docker-compose ps
+```
+
+2. Start the wallet service:
+
+```bash
+cargo run --bin trading-wallet
+```
+
+3. Then start the API server:
+
+```bash
+cargo run --bin trading-api
+```
+
+4. Finally start the trading bot:
+
+```bash
+cargo run --bin trading-bot
+```
+
 ## API Endpoints
 
 The trading API provides the following endpoints:
+
+### Wallet
+
+- `GET /wallet/info`: Get wallet info
 
 ### Tracked Wallets
 
@@ -137,23 +196,7 @@ The trading API provides the following endpoints:
 
 - `GET /transaction_history`: Get transaction history
 
-All endpoints require the database to be set up. Please see the `tables.sql` file for the schema.
-
-For detailed information on request and response formats for each endpoint, please refer to the API documentation.
-
-### Trading Bot
-
-To run the trading bot:
-
-```
-cargo run --bin trading-bot
-```
-
-The bot will check the database if your wallet exists and if it is following any tracked wallets.
-
-If it is following any tracked wallets, it will connect to the RPC websocket and start monitoring the wallet and execute trades based on the settings in the database.
-
-Currently only support pump.fun copy trading but will support all the major DEXs shortly.
+All endpoints require the database to be set up. Please see the `tables.sql` file for the schema and you can use the rest-client.http file to test the endpoints.
 
 ## Configuration
 
