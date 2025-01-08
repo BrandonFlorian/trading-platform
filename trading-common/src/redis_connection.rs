@@ -4,7 +4,7 @@ use crate::{
     models::{CopyTradeSettings, SettingsUpdateNotification},
 };
 use redis::AsyncConnectionConfig;
-use redis::{aio::ConnectionManager, AsyncCommands, Client, RedisResult, Value};
+use redis::{aio::ConnectionManager, AsyncCommands, Client};
 use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -128,7 +128,8 @@ impl RedisConnection {
                     .await
                 {
                     Ok(_) => {
-                        println!("Redis keep-alive ping successful");
+                        //This can be used to check if the connection is healthy but is annoying to leave uncommented
+                        //println!("Redis keep-alive ping successful");
                     }
                     Err(e) => {
                         eprintln!("Redis keep-alive ping failed: {}", e);
@@ -138,6 +139,7 @@ impl RedisConnection {
             }
             println!("Redis keep-alive task ended");
         });
+
         // Handle push messages
         tokio::spawn(async move {
             println!("Starting Redis message handler loop");
