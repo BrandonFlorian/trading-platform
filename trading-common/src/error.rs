@@ -95,8 +95,60 @@ pub enum AppError {
     #[error("Redis error: {0}")]
     RedisError(String),
 
+    #[error("gRPC connection error: {0}")]
+    GrpcConnectionError(String),
+
+    #[error("gRPC stream error: {0}")]
+    GrpcStreamError(String),
+
+    #[error("Event system error: {0}")]
+    EventSystemError(String),
+
+    #[error("Notification delivery error: {0}")]
+    NotificationError(String),
+
+    #[error("Service connection error: {service} - {details}")]
+    ServiceConnectionError { service: String, details: String },
+
+    #[error("Trade execution error: {details}")]
+    TradeExecutionError {
+        details: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
     #[error("{0}")]
     Generic(String),
+}
+
+impl AppError {
+    pub fn grpc_connection_error(msg: impl Into<String>) -> Self {
+        Self::GrpcConnectionError(msg.into())
+    }
+
+    pub fn event_system_error(msg: impl Into<String>) -> Self {
+        Self::EventSystemError(msg.into())
+    }
+
+    pub fn service_connection_error(
+        service: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        Self::ServiceConnectionError {
+            service: service.into(),
+            details: details.into(),
+        }
+    }
+
+    pub fn trade_execution_error(
+        details: impl Into<String>,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        Self::TradeExecutionError {
+            details: details.into(),
+            source,
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -133,7 +185,15 @@ impl IntoResponse for AppError {
             AppError::MessageProcessingError(message) => (StatusCode::BAD_REQUEST, message),
             AppError::TaskError(message) => (StatusCode::BAD_REQUEST, message),
             AppError::RedisError(message) => (StatusCode::BAD_REQUEST, message),
-            AppError::ServerError(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            AppError::GrpcConnectionError(message) => (StatusCode::BAD_GATEWAY, message),
+            AppError::GrpcStreamError(message) => (StatusCode::BAD_GATEWAY, message),
+            AppError::EventSystemError(message) => (StatusCode::BAD_REQUEST, message),
+            AppError::NotificationError(message) => (StatusCode::BAD_REQUEST, message),
+            AppError::ServiceConnectionError { service, details } => (
+                StatusCode::BAD_GATEWAY,
+                format!("{} - {}", service, details),
+            ),
+            AppError::TradeExecutionError { details, source } => (StatusCode::BAD_REQUEST, details),
         };
 
         let body = serde_json::json!({
@@ -181,14 +241,14 @@ impl From<anyhow::Error> for AppError {
     }
 }
 
-impl From<tonic::Status> for AppError {
-    fn from(status: tonic::Status) -> Self {
-        AppError::ServerError(format!("gRPC error: {}", status))
+impl From<tonic::transport::Error> for AppError {
+    fn from(error: tonic::transport::Error) -> Self {
+        Self::GrpcConnectionError(format!("Transport error: {}", error))
     }
 }
 
-impl From<tonic::transport::Error> for AppError {
-    fn from(error: tonic::transport::Error) -> Self {
-        AppError::ServerError(format!("gRPC transport error: {}", error))
+impl From<tonic::Status> for AppError {
+    fn from(status: tonic::Status) -> Self {
+        Self::GrpcConnectionError(format!("Status error: {}", status))
     }
 }

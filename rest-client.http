@@ -58,9 +58,9 @@ Content-Type: application/json
     "is_enabled": true,
     "trade_amount_sol": 0.001,
     "max_slippage": 0.2,
-    "max_open_positions": 2,
+    "max_open_positions": 20,
     "allow_additional_buys": true,
-    "match_sell_percentage": true,
+    "match_sell_percentage": false,
     "allowed_tokens": [],
     "use_allowed_tokens_list": false,
     "min_sol_balance": 0.001

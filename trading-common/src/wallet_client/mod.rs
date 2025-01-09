@@ -8,25 +8,59 @@ pub use crate::proto::wallet::{
     SubscribeRequest, TradeExecutionRequest, TradeExecutionResponse, WalletInfoRequest,
     WalletInfoResponse, WalletUpdate,
 };
+use crate::{
+    models::{ConnectionStatus, ConnectionType},
+    ConnectionMonitor,
+};
 
 #[derive(Clone)]
 pub struct WalletClient {
     client: Arc<Mutex<WalletServiceClient<Channel>>>,
+    connection_monitor: Arc<ConnectionMonitor>,
 }
 
 impl WalletClient {
-    pub async fn connect(addr: String) -> Result<Self> {
-        let client = WalletServiceClient::connect(addr).await?;
-        Ok(Self {
-            client: Arc::new(Mutex::new(client)),
-        })
+    pub async fn connect(addr: String, connection_monitor: Arc<ConnectionMonitor>) -> Result<Self> {
+        match WalletServiceClient::connect(addr).await {
+            Ok(client) => {
+                connection_monitor
+                    .update_status(ConnectionType::Grpc, ConnectionStatus::Connected, None)
+                    .await;
+
+                Ok(Self {
+                    client: Arc::new(Mutex::new(client)),
+                    connection_monitor,
+                })
+            }
+            Err(e) => {
+                connection_monitor
+                    .update_status(
+                        ConnectionType::Grpc,
+                        ConnectionStatus::Error,
+                        Some(e.to_string()),
+                    )
+                    .await;
+                Err(e.into())
+            }
+        }
     }
 
     pub async fn get_wallet_info(&self) -> Result<WalletInfoResponse> {
         let mut client = self.client.lock().await;
         let request = tonic::Request::new(WalletInfoRequest {});
-        let response = client.get_wallet_info(request).await?;
-        Ok(response.into_inner())
+        match client.get_wallet_info(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => {
+                self.connection_monitor
+                    .update_status(
+                        ConnectionType::Grpc,
+                        ConnectionStatus::Error,
+                        Some(e.to_string()),
+                    )
+                    .await;
+                Err(e.into())
+            }
+        }
     }
 
     pub async fn handle_trade_execution(
@@ -34,21 +68,54 @@ impl WalletClient {
         request: TradeExecutionRequest,
     ) -> Result<TradeExecutionResponse> {
         let mut client = self.client.lock().await;
-        let response = client.handle_trade_execution(request).await?;
-        Ok(response.into_inner())
+        match client.handle_trade_execution(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => {
+                self.connection_monitor
+                    .update_status(
+                        ConnectionType::Grpc,
+                        ConnectionStatus::Error,
+                        Some(e.to_string()),
+                    )
+                    .await;
+                Err(e.into())
+            }
+        }
     }
 
     pub async fn subscribe_to_updates(&self) -> Result<tonic::Streaming<WalletUpdate>> {
         let mut client = self.client.lock().await;
         let request = tonic::Request::new(SubscribeRequest {});
-        let response = client.subscribe_to_updates(request).await?;
-        Ok(response.into_inner())
+        match client.subscribe_to_updates(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => {
+                self.connection_monitor
+                    .update_status(
+                        ConnectionType::Grpc,
+                        ConnectionStatus::Error,
+                        Some(e.to_string()),
+                    )
+                    .await;
+                Err(e.into())
+            }
+        }
     }
 
     pub async fn refresh_balances(&self) -> Result<RefreshBalancesResponse> {
         let mut client = self.client.lock().await;
         let request = tonic::Request::new(RefreshBalancesRequest {});
-        let response = client.refresh_balances(request).await?;
-        Ok(response.into_inner())
+        match client.refresh_balances(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => {
+                self.connection_monitor
+                    .update_status(
+                        ConnectionType::Grpc,
+                        ConnectionStatus::Error,
+                        Some(e.to_string()),
+                    )
+                    .await;
+                Err(e.into())
+            }
+        }
     }
 }

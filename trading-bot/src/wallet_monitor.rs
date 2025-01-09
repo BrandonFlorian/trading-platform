@@ -12,17 +12,16 @@ use trading_common::{
     error::AppError,
     event_system::{Event, EventSystem},
     models::{
-        ClientTxInfo, CopyTradeNotification, CopyTradeSettings, TrackedWallet,
-        TrackedWalletNotification, TransactionLoggedNotification,
+        ClientTxInfo, ConnectionStatus, ConnectionType, CopyTradeNotification, CopyTradeSettings,
+        TrackedWallet, TrackedWalletNotification, TransactionLoggedNotification,
     },
-    server_wallet_manager::ServerWalletManager,
     utils::{
         copy_trade::{execute_copy_trade, should_copy_trade},
         transaction::process_websocket_message,
     },
     wallet_client::WalletClient,
     websocket::{WebSocketConfig, WebSocketConnectionManager},
-    TransactionLog,
+    ConnectionMonitor, TransactionLog,
 };
 use uuid::Uuid;
 
@@ -38,6 +37,7 @@ pub struct WalletMonitor {
     stop_signal: Arc<tokio::sync::watch::Sender<bool>>,
     stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
     wallet_client: Arc<WalletClient>,
+    connection_monitor: Arc<ConnectionMonitor>,
 }
 
 pub struct MessageProcessorContext {
@@ -56,6 +56,7 @@ pub struct WebSocketContext {
     tracked_wallets: Arc<RwLock<Option<Vec<TrackedWallet>>>>,
     rpc_client: Arc<RpcClient>,
     connection_manager: WebSocketConnectionManager,
+    connection_monitor: Arc<ConnectionMonitor>,
 }
 
 impl WalletMonitor {
@@ -66,6 +67,7 @@ impl WalletMonitor {
         server_keypair: Keypair,
         event_system: Arc<EventSystem>,
         wallet_client: Arc<WalletClient>,
+        connection_monitor: Arc<ConnectionMonitor>,
     ) -> Result<Self> {
         let user_id = server_keypair.pubkey().to_string();
         println!("Initializing WalletMonitor for user: {}", user_id);
@@ -101,6 +103,7 @@ impl WalletMonitor {
             stop_signal: Arc::new(stop_tx),
             stop_receiver: Arc::new(stop_rx),
             wallet_client,
+            connection_monitor,
         })
     }
 
@@ -128,6 +131,11 @@ impl WalletMonitor {
         let _ = self.stop_signal.send(false);
         println!("Stop signal set to false");
 
+        // Update connection status to Connected
+        self.connection_monitor
+            .update_status(ConnectionType::WebSocket, ConnectionStatus::Connected, None)
+            .await;
+
         // Start tasks
         let message_processor = self.start_message_processor().await?;
         let websocket_monitor = self.start_websocket_monitor().await?;
@@ -147,6 +155,7 @@ impl WalletMonitor {
                     }
                 }
                 Ok(event) = event_rx.recv() => {
+                    println!("Event received: {:?}", std::mem::discriminant(&event));
                     match event {
                         Event::SettingsUpdate(notification) => {
                             println!("Event - Received settings update: {:?}", notification.data);
@@ -163,6 +172,18 @@ impl WalletMonitor {
                         }
                         Event::TransactionLogged(notification) => {
                             println!("Event - Received transaction logged: {:?}", notification.data);
+                        }
+                        Event::WalletStateChange(notification) => {
+                            println!("Event - Received wallet state change: {:?}", notification.data);
+                        }
+                        Event::TrackedWalletTransaction(notification) => {
+                            println!("Event - Received tracked wallet transaction: {:?}", notification.data);
+                        }
+                        Event::TradeExecution(notification) => {
+                            println!("Event - Received trade execution: {:?}", notification.data);
+                        }
+                        Event::ConnectionStatus(notification) => {
+                            println!("Event - Received connection status: {:?}", notification.data);
                         }
                         _ => {}
                     }
@@ -183,6 +204,15 @@ impl WalletMonitor {
     pub async fn stop(&mut self) -> Result<(), AppError> {
         println!("Stopping WalletMonitor...");
         let _ = self.stop_signal.send(true);
+
+        // Update connection status
+        self.connection_monitor
+            .update_status(
+                ConnectionType::WebSocket,
+                ConnectionStatus::Disconnected,
+                None,
+            )
+            .await;
 
         println!("Waiting for tasks to complete...");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -410,6 +440,13 @@ impl WalletMonitor {
     }
 
     async fn start_websocket_monitor(&mut self) -> Result<tokio::task::JoinHandle<()>, AppError> {
+        self.connection_monitor
+            .update_status(
+                ConnectionType::WebSocket,
+                ConnectionStatus::Connecting,
+                None,
+            )
+            .await;
         let ws_config = WebSocketConfig {
             health_check_interval: Duration::from_secs(30),
             connection_timeout: Duration::from_secs(5),
@@ -427,6 +464,7 @@ impl WalletMonitor {
                 self.ws_url.clone(),
                 Some(ws_config),
             ),
+            connection_monitor: Arc::clone(&self.connection_monitor),
         };
 
         Ok(tokio::spawn(Self::run_websocket_monitor(context)))
@@ -439,10 +477,18 @@ impl WalletMonitor {
             tracked_wallets,
             rpc_client,
             mut connection_manager,
+            connection_monitor,
         } = context;
 
         loop {
             if *stop_receiver.borrow() {
+                connection_monitor
+                    .update_status(
+                        ConnectionType::WebSocket,
+                        ConnectionStatus::Disconnected,
+                        None,
+                    )
+                    .await;
                 break;
             }
 
@@ -461,51 +507,134 @@ impl WalletMonitor {
                 continue;
             }
 
+            // Update status to connecting before attempt
+            connection_monitor
+                .update_status(
+                    ConnectionType::WebSocket,
+                    ConnectionStatus::Connecting,
+                    None,
+                )
+                .await;
+
             match connection_manager.ensure_connection().await {
                 Ok(_) => {
                     // Try to subscribe
-                    if let Err(e) = connection_manager.subscribe(wallet_addresses).await {
-                        error!("Failed to subscribe to wallets: {}", e);
-                        continue;
-                    }
-
-                    // Process messages until error or closure
-                    loop {
-                        if *stop_receiver.borrow() {
-                            break;
-                        }
-
-                        match connection_manager.receive_message().await {
-                            Ok(Some(Message::Text(text))) => {
-                                if let Err(e) = Self::handle_websocket_message(
-                                    Message::Text(text),
-                                    &rpc_client,
-                                    &message_queue,
+                    match connection_manager.subscribe(wallet_addresses).await {
+                        Ok(_) => {
+                            connection_monitor
+                                .update_status(
+                                    ConnectionType::WebSocket,
+                                    ConnectionStatus::Connected,
+                                    None,
                                 )
-                                .await
-                                {
-                                    error!("Message handling error: {}", e);
+                                .await;
+
+                            // Process messages until error or closure
+                            loop {
+                                if *stop_receiver.borrow() {
+                                    break;
+                                }
+
+                                match connection_manager.receive_message().await {
+                                    Ok(Some(Message::Text(text))) => {
+                                        if let Err(e) = Self::handle_websocket_message(
+                                            Message::Text(text),
+                                            &rpc_client,
+                                            &message_queue,
+                                        )
+                                        .await
+                                        {
+                                            error!("Message handling error: {}", e);
+                                            connection_monitor
+                                                .update_status(
+                                                    ConnectionType::WebSocket,
+                                                    ConnectionStatus::Error,
+                                                    Some(e.to_string()),
+                                                )
+                                                .await;
+                                            break;
+                                        }
+                                    }
+                                    Ok(Some(Message::Close(_))) => {
+                                        connection_monitor
+                                            .update_status(
+                                                ConnectionType::WebSocket,
+                                                ConnectionStatus::Disconnected,
+                                                None,
+                                            )
+                                            .await;
+                                        break;
+                                    }
+                                    Ok(None) => {
+                                        connection_monitor
+                                            .update_status(
+                                                ConnectionType::WebSocket,
+                                                ConnectionStatus::Disconnected,
+                                                None,
+                                            )
+                                            .await;
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        error!("WebSocket error: {}", e);
+                                        connection_monitor
+                                            .update_status(
+                                                ConnectionType::WebSocket,
+                                                ConnectionStatus::Error,
+                                                Some(e.to_string()),
+                                            )
+                                            .await;
+                                        break;
+                                    }
+                                    _ => continue,
                                 }
                             }
-                            Ok(Some(Message::Close(_))) => break,
-                            Ok(None) => break, // Connection closed
-                            Err(e) => {
-                                error!("WebSocket error: {}", e);
-                                break;
-                            }
-                            _ => continue,
+                        }
+                        Err(e) => {
+                            error!("Failed to subscribe to wallets: {}", e);
+                            connection_monitor
+                                .update_status(
+                                    ConnectionType::WebSocket,
+                                    ConnectionStatus::Error,
+                                    Some(format!("Subscription failed: {}", e)),
+                                )
+                                .await;
+                            continue;
                         }
                     }
                 }
                 Err(e) => {
                     error!("Failed to ensure connection: {}", e);
+                    connection_monitor
+                        .update_status(
+                            ConnectionType::WebSocket,
+                            ConnectionStatus::Error,
+                            Some(format!("Connection failed: {}", e)),
+                        )
+                        .await;
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
         }
 
         // Cleanup on exit
-        connection_manager.shutdown().await.ok();
+        if let Err(e) = connection_manager.shutdown().await {
+            connection_monitor
+                .update_status(
+                    ConnectionType::WebSocket,
+                    ConnectionStatus::Error,
+                    Some(format!("Shutdown error: {}", e)),
+                )
+                .await;
+        } else {
+            connection_monitor
+                .update_status(
+                    ConnectionType::WebSocket,
+                    ConnectionStatus::Disconnected,
+                    None,
+                )
+                .await;
+        }
     }
 
     async fn handle_websocket_message(

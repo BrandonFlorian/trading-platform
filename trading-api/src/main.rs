@@ -10,11 +10,11 @@ use solana_sdk::signer::Signer;
 use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
-use trading_common::wallet_client::WalletClient;
 use trading_common::{
     data::get_server_keypair, event_system::EventSystem, redis_connection::RedisConnection,
     SupabaseClient,
 };
+use trading_common::{wallet_client::WalletClient, ConnectionMonitor};
 mod routes;
 
 #[derive(Clone)]
@@ -23,12 +23,14 @@ struct AppState {
     supabase_client: SupabaseClient,
     redis_connection: RedisConnection,
     wallet_client: WalletClient,
+    event_system: Arc<EventSystem>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
 
+    // Supabase
     let supabase_url = env::var("SUPABASE_URL").context("SUPABASE_URL must be set")?;
     let supabase_service_role_key =
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
@@ -36,40 +38,55 @@ async fn main() -> Result<()> {
     let supabase_key =
         env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
 
+    // Solana
     let rpc_url = env::var("SOLANA_RPC_HTTP_URL").context("SOLANA_RPC_HTTP_URL must be set")?;
+
+    // Redis
     let redis_url = env::var("REDIS_URL").context("REDIS_URL must be set")?;
     println!("rpc_url: {}", rpc_url);
 
+    // Create server keypair
     let server_keypair = get_server_keypair();
     let user_id = server_keypair.pubkey().to_string();
     println!("user_id: {}", user_id);
 
+    // Create event system
     let event_system = Arc::new(EventSystem::new());
 
+    // Create connection monitor
+    let connection_monitor = Arc::new(ConnectionMonitor::new(event_system.clone()));
+
+    // Create wallet client
     let wallet_service_url =
         env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
-    let wallet_client = WalletClient::connect(wallet_service_url).await?;
+    let wallet_client =
+        WalletClient::connect(wallet_service_url, connection_monitor.clone()).await?;
 
+    // Create supabase client
     let supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
-        event_system,
+        event_system.clone(),
     );
 
+    // Create rpc client
     let rpc_client = RpcClient::new(rpc_url);
     let shared_rpc_client = Arc::new(ArcSwap::from_pointee(rpc_client));
 
-    let redis_connection = RedisConnection::new(&redis_url).await.unwrap();
+    // Create redis connection
+    let redis_connection = RedisConnection::new(&redis_url, connection_monitor.clone()).await?;
 
     let state = AppState {
         rpc_client: shared_rpc_client,
         supabase_client,
         redis_connection,
         wallet_client,
+        event_system,
     };
 
+    // Create app
     let app = Router::new()
         .route("/wallet/info", get(routes::get_wallet_info))
         .route("/tracked_wallets", get(routes::get_tracked_wallets))

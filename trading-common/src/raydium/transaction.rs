@@ -39,7 +39,7 @@ pub fn extract_transaction_details(
 
     let token_address = token_balance.mint.clone();
 
-    // Calculate token amount change for the non-WSOL token
+    // Calculate token amount change
     let pre_amount = pre_balances
         .iter()
         .find(|b| b.mint == token_address)
@@ -52,11 +52,17 @@ pub fn extract_transaction_details(
         .and_then(|b| b.ui_token_amount.ui_amount)
         .unwrap_or(0.0);
 
-    // If token amount increases, it's a buy. If it decreases, it's a sell
     let token_amount_change = post_amount - pre_amount;
     println!("Token amount change: {}", token_amount_change);
 
-    let transaction_type = if token_amount_change > 0.0 {
+    // Determine transaction type based on the actual operation
+    let transaction_type = if logs.iter().any(|log| log.contains("Instruction: Buy")) {
+        println!("Detected Raydium BUY from instruction");
+        TransactionType::Buy
+    } else if logs.iter().any(|log| log.contains("Instruction: Sell")) {
+        println!("Detected Raydium SELL from instruction");
+        TransactionType::Sell
+    } else if token_amount_change > 0.0 {
         println!("Detected Raydium BUY (token balance increased)");
         TransactionType::Buy
     } else {

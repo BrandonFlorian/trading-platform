@@ -18,6 +18,7 @@ pub mod wallet {
 pub mod events {
     pub mod event_system;
 }
+pub mod connection_monitor;
 pub mod proto;
 pub mod redis_connection;
 pub mod wallet_client;
@@ -31,6 +32,7 @@ pub use events::*;
 pub use models::{ClientTxInfo, CopyTradeSettings, TrackedWallet, TransactionLog, TransactionType};
 pub use proto::*;
 
+pub use connection_monitor::*;
 pub use pumpdotfun::{buy, process_buy_request, process_sell_request, sell, types};
 pub use raydium::*;
 pub use redis_connection::*;

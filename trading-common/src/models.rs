@@ -37,6 +37,46 @@ pub struct User {
     pub wallet_address: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WalletStateChangeType {
+    Added,
+    Archived,
+    Unarchived,
+    Updated,
+    Deleted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletStateChange {
+    pub wallet_address: String,
+    pub change_type: WalletStateChangeType,
+    pub timestamp: DateTime<Utc>,
+    pub details: Option<serde_json::Value>,
+}
+
+impl WalletStateChange {
+    pub fn new(wallet_address: String, change_type: WalletStateChangeType) -> Self {
+        Self {
+            wallet_address,
+            change_type,
+            timestamp: Utc::now(),
+            details: None,
+        }
+    }
+
+    pub fn with_details(mut self, details: impl Into<serde_json::Value>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletStateNotification {
+    pub data: WalletStateChange,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TrackedWallet {
     pub id: Option<Uuid>,
@@ -237,4 +277,74 @@ pub struct TokenInfo {
     pub metadata_uri: Option<String>,
     pub decimals: u8,
     pub market_cap: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum ConnectionType {
+    WebSocket,
+    Grpc,
+    Redis,
+    Database,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConnectionStatus {
+    Connected,
+    Disconnected,
+    Error,
+    Reconnecting,
+    Connecting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionStatusChange {
+    pub connection_type: ConnectionType,
+    pub status: ConnectionStatus,
+    pub timestamp: DateTime<Utc>,
+    pub details: Option<String>,
+}
+
+impl ConnectionStatusChange {
+    pub fn new(connection_type: ConnectionType, status: ConnectionStatus) -> Self {
+        Self {
+            connection_type,
+            status,
+            timestamp: Utc::now(),
+            details: None,
+        }
+    }
+
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionStatusNotification {
+    pub data: ConnectionStatusChange,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeExecution {
+    pub id: Uuid,
+    pub trade_type: String,       // "manual" or "copy"
+    pub dex_type: String,         // "pump_fun" or "raydium"
+    pub transaction_type: String, // "buy" or "sell"
+    pub token_address: String,
+    pub amount: f64,
+    pub price_sol: f64,
+    pub signature: String,
+    pub timestamp: DateTime<Utc>,
+    pub status: String, // "success", "failed", "pending"
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeExecutionNotification {
+    pub data: TradeExecution,
+    #[serde(rename = "type")]
+    pub type_: String,
 }
