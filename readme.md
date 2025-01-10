@@ -84,7 +84,7 @@ The project is organized as a Rust workspace with four main components:
 - docker and docker-compose
 - protobuf
   
-![trading-platform-diagram](https://github.com/user-attachments/assets/a5d1d6bf-cdf7-4c26-b7ab-5a665edc0148)
+![trading-platform-diagram](https://github.com/user-attachments/assets/d8f0b4b7-5b99-4719-898a-671e230627cb)
 
 ## Protocol Buffers (gRPC) Setup
 
