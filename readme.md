@@ -104,9 +104,10 @@ When you build the project:
 
 If you modify the `wallet.proto` file, the code will automatically regenerate during the next build. You can also force regeneration with:
 
-````bash
+```bash
 cargo clean -p trading-common
 cargo build
+```
 
 ## Setup
 
