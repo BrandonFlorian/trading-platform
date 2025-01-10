@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use axum::{
+    http::{HeaderValue, Method},
     routing::{delete, get, post, put},
     Router,
 };
@@ -10,11 +11,13 @@ use solana_sdk::signer::Signer;
 use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
+use tower_http::cors::CorsLayer;
 use trading_common::{
     data::get_server_keypair, event_system::EventSystem, redis_connection::RedisConnection,
     SupabaseClient,
 };
 use trading_common::{wallet_client::WalletClient, ConnectionMonitor};
+
 mod routes;
 
 #[derive(Clone)]
@@ -86,6 +89,23 @@ async fn main() -> Result<()> {
         event_system,
     };
 
+    // CORS
+    let cors_allowed_origins = env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "".to_string());
+    let cors = CorsLayer::new()
+        .allow_origin(cors_allowed_origins.parse::<HeaderValue>().unwrap())
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .allow_credentials(true);
+
     // Create app
     let app = Router::new()
         .route("/wallet/info", get(routes::get_wallet_info))
@@ -125,8 +145,8 @@ async fn main() -> Result<()> {
         .route("/pump_fun/sell", post(routes::pump_fun_sell))
         .route("/raydium/buy", post(routes::raydium_buy))
         .route("/raydium/sell", post(routes::raydium_sell))
-        .with_state(state);
-
+        .with_state(state)
+        .layer(cors);
     let port = env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = SocketAddr::from(([0, 0, 0, 0], port.parse()?));
 

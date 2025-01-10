@@ -18,7 +18,7 @@ pub async fn process_websocket_message(
 ) -> Result<Option<ClientTxInfo>> {
     println!("Processing websocket message");
     let value: Value = serde_json::from_str(text)?;
-    println!("Raw message: {}", text);
+    //println!("Raw message: {}", text);
 
     // Check for error in json_data
     if value.get("error").is_some() {
