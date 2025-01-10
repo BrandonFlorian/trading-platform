@@ -115,7 +115,7 @@ cargo build
 ```bash
 git clone https://github.com/yourusername/solana-trading-project.git
 cd solana-trading-project
-````
+```
 
 2. Set up environment variables:
 
