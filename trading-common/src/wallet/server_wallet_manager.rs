@@ -9,18 +9,19 @@ use serde::Serialize;
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_request::TokenAccountsFilter;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signature;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use surf::Client;
 
 pub struct ServerWalletManager {
-    rpc_client: Arc<RpcClient>,
-    _http_client: Client,
-    public_key: Pubkey,
-    balance: f64,
-    tokens: HashMap<String, TokenInfo>,
-    event_system: Arc<EventSystem>,
+    pub rpc_client: Arc<RpcClient>,
+    pub _http_client: Client,
+    pub public_key: Pubkey,
+    pub balance: f64,
+    pub tokens: HashMap<String, TokenInfo>,
+    pub event_system: Arc<EventSystem>,
 }
 
 impl ServerWalletManager {
@@ -60,8 +61,8 @@ impl ServerWalletManager {
     }
 
     pub async fn get_token_balances(&mut self) -> Result<()> {
-        // Clear existing tokens
-        self.tokens.clear();
+        // Create a new map for the updated state
+        let mut updated_tokens = HashMap::new();
 
         // Get all token accounts
         let token_accounts = self.rpc_client.get_token_accounts_by_owner(
@@ -69,29 +70,53 @@ impl ServerWalletManager {
             TokenAccountsFilter::ProgramId(spl_token::id()),
         )?;
 
-        // Process each token account
+        let count = token_accounts.len();
+        println!("Processing {} token accounts", count);
+
+        // Process only accounts that have non-zero balance
         for account in token_accounts {
             let (mint, balance, decimals) = extract_token_account_info(&account.account.data)
                 .context("Failed to extract token account info")?;
 
             if balance > 0 {
                 let mint_pubkey = Pubkey::from_str(&mint)?;
-                let metadata = get_metadata(&self.rpc_client, &mint_pubkey).await?;
 
-                self.tokens.insert(
-                    mint.clone(),
+                // Try to get existing token info first for efficiency
+                let token_info = if let Some(existing) = self.tokens.get(&mint) {
                     TokenInfo {
-                        address: mint,
+                        balance: format_balance(format_token_amount(balance, decimals), decimals),
+                        ..existing.clone()
+                    }
+                } else {
+                    // Only fetch metadata for new tokens with balance
+                    let metadata = get_metadata(&self.rpc_client, &mint_pubkey).await?;
+                    TokenInfo {
+                        address: mint.clone(),
                         symbol: metadata.symbol,
                         name: metadata.name,
                         balance: format_balance(format_token_amount(balance, decimals), decimals),
                         metadata_uri: Some(metadata.uri),
                         decimals,
                         market_cap: 0.0,
-                    },
+                    }
+                };
+
+                updated_tokens.insert(mint.clone(), token_info);
+                println!(
+                    "Added token {} with balance {}",
+                    mint,
+                    format_token_amount(balance, decimals)
                 );
             }
         }
+
+        // Replace the old map with the new one
+        let token_count = updated_tokens.len();
+        self.tokens = updated_tokens;
+        println!(
+            "Updated balances for {} tokens with non-zero balance",
+            token_count
+        );
 
         Ok(())
     }
@@ -161,36 +186,26 @@ impl ServerWalletManager {
     }
 
     pub async fn handle_trade_execution(&mut self, tx_info: &ClientTxInfo) -> Result<()> {
-        match tx_info.transaction_type {
-            TransactionType::Buy => {
-                // Update SOL balance (subtract)
-                self.update_balance(-tx_info.amount_sol);
+        println!("Server wallet handling trade execution: {:?}", tx_info);
 
-                // Update or add token balance
-                self.update_token_balance(
-                    &tx_info.token_address,
-                    tx_info.amount_token,
-                    9, // Need to make this dynamic
-                    Some(HashMap::from([
-                        ("name".to_string(), tx_info.token_name.clone()),
-                        ("symbol".to_string(), tx_info.token_symbol.clone()),
-                        ("metadataUri".to_string(), tx_info.token_image_uri.clone()),
-                    ])),
-                );
-            }
-            TransactionType::Sell => {
-                // Update SOL balance (add)
-                self.update_balance(tx_info.amount_sol);
+        let signature = Signature::from_str(&tx_info.signature)?;
 
-                // Update token balance (should be zero after sell)
-                self.update_token_balance(&tx_info.token_address, 0.0, 9, None);
+        // Wait for finality using signature status
+        loop {
+            let status = self.rpc_client.get_signature_status(&signature)?;
+            match status {
+                Some(Ok(_)) => break, // Transaction is confirmed
+                Some(Err(e)) => return Err(anyhow::anyhow!("Transaction failed: {}", e)),
+                None => tokio::time::sleep(tokio::time::Duration::from_millis(500)).await,
             }
-            _ => {}
         }
 
-        // Refresh actual balances to ensure accuracy
+        // Single refresh once we know the transaction is final
         self.refresh_balances().await?;
-
+        println!(
+            "Final state - SOL: {}, Tokens: {:?}",
+            self.balance, self.tokens
+        );
         Ok(())
     }
 }

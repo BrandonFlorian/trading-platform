@@ -2,6 +2,7 @@
 name = "trading-common"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 tokio = { workspace = true }
@@ -34,3 +35,8 @@ tokio-tungstenite = { workspace = true }
 backoff = { workspace = true }
 tokio-native-tls = { workspace = true }
 redis = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.12.3"

@@ -12,16 +12,16 @@ use trading_common::{
     error::AppError,
     event_system::{Event, EventSystem},
     models::{
-        ClientTxInfo, CopyTradeNotification, CopyTradeSettings, TrackedWallet,
-        TrackedWalletNotification, TransactionLoggedNotification,
+        ClientTxInfo, ConnectionStatus, ConnectionType, CopyTradeNotification, CopyTradeSettings,
+        TrackedWallet, TrackedWalletNotification, TransactionLoggedNotification,
     },
-    server_wallet_manager::ServerWalletManager,
     utils::{
         copy_trade::{execute_copy_trade, should_copy_trade},
         transaction::process_websocket_message,
     },
+    wallet_client::WalletClient,
     websocket::{WebSocketConfig, WebSocketConnectionManager},
-    RedisConnection, TransactionLog,
+    ConnectionMonitor, TransactionLog,
 };
 use uuid::Uuid;
 
@@ -36,17 +36,18 @@ pub struct WalletMonitor {
     message_receiver: Arc<Mutex<Option<mpsc::UnboundedReceiver<ClientTxInfo>>>>,
     stop_signal: Arc<tokio::sync::watch::Sender<bool>>,
     stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
-    server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+    wallet_client: Arc<WalletClient>,
+    connection_monitor: Arc<ConnectionMonitor>,
 }
 
 pub struct MessageProcessorContext {
     event_system: Arc<EventSystem>,
     rpc_client: Arc<RpcClient>,
-    server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
     stop_receiver: Arc<tokio::sync::watch::Receiver<bool>>,
     copy_trade_settings: Arc<RwLock<Option<Vec<CopyTradeSettings>>>>,
     message_receiver: mpsc::UnboundedReceiver<ClientTxInfo>,
     server_keypair: Keypair,
+    wallet_client: Arc<WalletClient>,
 }
 
 pub struct WebSocketContext {
@@ -55,6 +56,7 @@ pub struct WebSocketContext {
     tracked_wallets: Arc<RwLock<Option<Vec<TrackedWallet>>>>,
     rpc_client: Arc<RpcClient>,
     connection_manager: WebSocketConnectionManager,
+    connection_monitor: Arc<ConnectionMonitor>,
 }
 
 impl WalletMonitor {
@@ -64,7 +66,8 @@ impl WalletMonitor {
         supabase_client: Arc<SupabaseClient>,
         server_keypair: Keypair,
         event_system: Arc<EventSystem>,
-        server_wallet_manager: Arc<tokio::sync::Mutex<ServerWalletManager>>,
+        wallet_client: Arc<WalletClient>,
+        connection_monitor: Arc<ConnectionMonitor>,
     ) -> Result<Self> {
         let user_id = server_keypair.pubkey().to_string();
         println!("Initializing WalletMonitor for user: {}", user_id);
@@ -99,7 +102,8 @@ impl WalletMonitor {
             message_receiver: Arc::new(Mutex::new(Some(rx))),
             stop_signal: Arc::new(stop_tx),
             stop_receiver: Arc::new(stop_rx),
-            server_wallet_manager,
+            wallet_client,
+            connection_monitor,
         })
     }
 
@@ -127,6 +131,11 @@ impl WalletMonitor {
         let _ = self.stop_signal.send(false);
         println!("Stop signal set to false");
 
+        // Update connection status to Connected
+        self.connection_monitor
+            .update_status(ConnectionType::WebSocket, ConnectionStatus::Connected, None)
+            .await;
+
         // Start tasks
         let message_processor = self.start_message_processor().await?;
         let websocket_monitor = self.start_websocket_monitor().await?;
@@ -146,6 +155,7 @@ impl WalletMonitor {
                     }
                 }
                 Ok(event) = event_rx.recv() => {
+                    println!("Event received: {:?}", std::mem::discriminant(&event));
                     match event {
                         Event::SettingsUpdate(notification) => {
                             println!("Event - Received settings update: {:?}", notification.data);
@@ -162,6 +172,18 @@ impl WalletMonitor {
                         }
                         Event::TransactionLogged(notification) => {
                             println!("Event - Received transaction logged: {:?}", notification.data);
+                        }
+                        Event::WalletStateChange(notification) => {
+                            println!("Event - Received wallet state change: {:?}", notification.data);
+                        }
+                        Event::TrackedWalletTransaction(notification) => {
+                            println!("Event - Received tracked wallet transaction: {:?}", notification.data);
+                        }
+                        Event::TradeExecution(notification) => {
+                            println!("Event - Received trade execution: {:?}", notification.data);
+                        }
+                        Event::ConnectionStatus(notification) => {
+                            println!("Event - Received connection status: {:?}", notification.data);
                         }
                         _ => {}
                     }
@@ -183,6 +205,15 @@ impl WalletMonitor {
         println!("Stopping WalletMonitor...");
         let _ = self.stop_signal.send(true);
 
+        // Update connection status
+        self.connection_monitor
+            .update_status(
+                ConnectionType::WebSocket,
+                ConnectionStatus::Disconnected,
+                None,
+            )
+            .await;
+
         println!("Waiting for tasks to complete...");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
@@ -194,13 +225,14 @@ impl WalletMonitor {
         let context = MessageProcessorContext {
             event_system: Arc::clone(&self.event_system),
             rpc_client: Arc::clone(&self.rpc_client),
-            server_wallet_manager: Arc::clone(&self.server_wallet_manager),
+
             stop_receiver: Arc::clone(&self.stop_receiver),
             copy_trade_settings: Arc::clone(&self.copy_trade_settings),
             message_receiver: self.message_receiver.lock().take().ok_or_else(|| {
                 AppError::InitializationError("Message receiver not available".to_string())
             })?,
             server_keypair: get_server_keypair(),
+            wallet_client: Arc::clone(&self.wallet_client),
         };
 
         Ok(tokio::spawn(Self::run_message_processor(context)))
@@ -210,11 +242,11 @@ impl WalletMonitor {
         let MessageProcessorContext {
             event_system,
             rpc_client,
-            server_wallet_manager,
             stop_receiver,
             copy_trade_settings,
             mut message_receiver,
             server_keypair,
+            wallet_client,
         } = context;
 
         println!("Message processor started");
@@ -233,9 +265,9 @@ impl WalletMonitor {
                     &rpc_client,
                     &server_keypair,
                     &event_system,
-                    &server_wallet_manager,
                     &settings,
                     client_message,
+                    &wallet_client,
                 ).await {
                     println!("Error processing transaction: {}", e);
                 }
@@ -252,9 +284,9 @@ impl WalletMonitor {
         rpc_client: &Arc<RpcClient>,
         server_keypair: &Keypair,
         event_system: &Arc<EventSystem>,
-        server_wallet_manager: &Arc<tokio::sync::Mutex<ServerWalletManager>>,
         copy_trade_settings: &Option<Vec<CopyTradeSettings>>,
         client_message: ClientTxInfo,
+        wallet_client: &Arc<WalletClient>,
     ) -> Result<(), AppError> {
         println!("----------------------");
         println!("Handling transaction: {}", client_message.signature);
@@ -283,14 +315,33 @@ impl WalletMonitor {
                 match Self::process_copy_trade(
                     rpc_client,
                     server_keypair,
-                    server_wallet_manager,
                     settings,
                     &client_message,
+                    wallet_client,
                 )
                 .await
                 {
                     Ok(_) => {
-                        // Emit copy trade executed event after successful execution
+                        // Let the wallet service know about the trade
+                        let trade_request = trading_common::proto::wallet::TradeExecutionRequest {
+                            signature: client_message.signature.clone(),
+                            token_address: client_message.token_address.clone(),
+                            token_name: client_message.token_name.clone(),
+                            token_symbol: client_message.token_symbol.clone(),
+                            transaction_type: format!("{:?}", client_message.transaction_type),
+                            amount_token: client_message.amount_token,
+                            amount_sol: client_message.amount_sol,
+                            price_per_token: client_message.price_per_token,
+                            token_image_uri: client_message.token_image_uri.clone(),
+                        };
+
+                        wallet_client
+                            .handle_trade_execution(trade_request)
+                            .await
+                            .map_err(|e| {
+                                AppError::ServerError(format!("Failed to update wallet: {}", e))
+                            })?;
+
                         event_system
                             .handle_copy_trade_executed(CopyTradeNotification {
                                 data: client_message.clone(),
@@ -344,11 +395,18 @@ impl WalletMonitor {
     async fn process_copy_trade(
         rpc_client: &Arc<RpcClient>,
         server_keypair: &Keypair,
-        server_wallet_manager: &Arc<tokio::sync::Mutex<ServerWalletManager>>,
         settings: &CopyTradeSettings,
         client_message: &ClientTxInfo,
+        wallet_client: &Arc<WalletClient>,
     ) -> Result<(), AppError> {
-        if !should_copy_trade(client_message, settings, server_wallet_manager).await? {
+        // Check if we should copy trade
+        let wallet_info = wallet_client
+            .get_wallet_info()
+            .await
+            .map_err(|e| AppError::ServerError(format!("Failed to get wallet info: {}", e)))?;
+
+        // Logic for should_copy_trade would need to be adapted to use wallet_info
+        if !should_copy_trade(client_message, settings, &wallet_info).await? {
             return Ok(());
         }
 
@@ -363,14 +421,6 @@ impl WalletMonitor {
         .map_err(|e| {
             AppError::MessageProcessingError(format!("Execute copy trade failed: {}", e))
         })?;
-
-        let mut wallet_manager = server_wallet_manager.lock().await;
-        wallet_manager
-            .handle_trade_execution(client_message)
-            .await
-            .map_err(|e| {
-                AppError::MessageProcessingError(format!("Wallet update failed: {}", e))
-            })?;
 
         Ok(())
     }
@@ -390,6 +440,13 @@ impl WalletMonitor {
     }
 
     async fn start_websocket_monitor(&mut self) -> Result<tokio::task::JoinHandle<()>, AppError> {
+        self.connection_monitor
+            .update_status(
+                ConnectionType::WebSocket,
+                ConnectionStatus::Connecting,
+                None,
+            )
+            .await;
         let ws_config = WebSocketConfig {
             health_check_interval: Duration::from_secs(30),
             connection_timeout: Duration::from_secs(5),
@@ -407,6 +464,7 @@ impl WalletMonitor {
                 self.ws_url.clone(),
                 Some(ws_config),
             ),
+            connection_monitor: Arc::clone(&self.connection_monitor),
         };
 
         Ok(tokio::spawn(Self::run_websocket_monitor(context)))
@@ -419,10 +477,18 @@ impl WalletMonitor {
             tracked_wallets,
             rpc_client,
             mut connection_manager,
+            connection_monitor,
         } = context;
 
         loop {
             if *stop_receiver.borrow() {
+                connection_monitor
+                    .update_status(
+                        ConnectionType::WebSocket,
+                        ConnectionStatus::Disconnected,
+                        None,
+                    )
+                    .await;
                 break;
             }
 
@@ -441,51 +507,134 @@ impl WalletMonitor {
                 continue;
             }
 
+            // Update status to connecting before attempt
+            connection_monitor
+                .update_status(
+                    ConnectionType::WebSocket,
+                    ConnectionStatus::Connecting,
+                    None,
+                )
+                .await;
+
             match connection_manager.ensure_connection().await {
                 Ok(_) => {
                     // Try to subscribe
-                    if let Err(e) = connection_manager.subscribe(wallet_addresses).await {
-                        error!("Failed to subscribe to wallets: {}", e);
-                        continue;
-                    }
-
-                    // Process messages until error or closure
-                    loop {
-                        if *stop_receiver.borrow() {
-                            break;
-                        }
-
-                        match connection_manager.receive_message().await {
-                            Ok(Some(Message::Text(text))) => {
-                                if let Err(e) = Self::handle_websocket_message(
-                                    Message::Text(text),
-                                    &rpc_client,
-                                    &message_queue,
+                    match connection_manager.subscribe(wallet_addresses).await {
+                        Ok(_) => {
+                            connection_monitor
+                                .update_status(
+                                    ConnectionType::WebSocket,
+                                    ConnectionStatus::Connected,
+                                    None,
                                 )
-                                .await
-                                {
-                                    error!("Message handling error: {}", e);
+                                .await;
+
+                            // Process messages until error or closure
+                            loop {
+                                if *stop_receiver.borrow() {
+                                    break;
+                                }
+
+                                match connection_manager.receive_message().await {
+                                    Ok(Some(Message::Text(text))) => {
+                                        if let Err(e) = Self::handle_websocket_message(
+                                            Message::Text(text),
+                                            &rpc_client,
+                                            &message_queue,
+                                        )
+                                        .await
+                                        {
+                                            error!("Message handling error: {}", e);
+                                            connection_monitor
+                                                .update_status(
+                                                    ConnectionType::WebSocket,
+                                                    ConnectionStatus::Error,
+                                                    Some(e.to_string()),
+                                                )
+                                                .await;
+                                            break;
+                                        }
+                                    }
+                                    Ok(Some(Message::Close(_))) => {
+                                        connection_monitor
+                                            .update_status(
+                                                ConnectionType::WebSocket,
+                                                ConnectionStatus::Disconnected,
+                                                None,
+                                            )
+                                            .await;
+                                        break;
+                                    }
+                                    Ok(None) => {
+                                        connection_monitor
+                                            .update_status(
+                                                ConnectionType::WebSocket,
+                                                ConnectionStatus::Disconnected,
+                                                None,
+                                            )
+                                            .await;
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        error!("WebSocket error: {}", e);
+                                        connection_monitor
+                                            .update_status(
+                                                ConnectionType::WebSocket,
+                                                ConnectionStatus::Error,
+                                                Some(e.to_string()),
+                                            )
+                                            .await;
+                                        break;
+                                    }
+                                    _ => continue,
                                 }
                             }
-                            Ok(Some(Message::Close(_))) => break,
-                            Ok(None) => break, // Connection closed
-                            Err(e) => {
-                                error!("WebSocket error: {}", e);
-                                break;
-                            }
-                            _ => continue,
+                        }
+                        Err(e) => {
+                            error!("Failed to subscribe to wallets: {}", e);
+                            connection_monitor
+                                .update_status(
+                                    ConnectionType::WebSocket,
+                                    ConnectionStatus::Error,
+                                    Some(format!("Subscription failed: {}", e)),
+                                )
+                                .await;
+                            continue;
                         }
                     }
                 }
                 Err(e) => {
                     error!("Failed to ensure connection: {}", e);
+                    connection_monitor
+                        .update_status(
+                            ConnectionType::WebSocket,
+                            ConnectionStatus::Error,
+                            Some(format!("Connection failed: {}", e)),
+                        )
+                        .await;
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
         }
 
         // Cleanup on exit
-        connection_manager.shutdown().await.ok();
+        if let Err(e) = connection_manager.shutdown().await {
+            connection_monitor
+                .update_status(
+                    ConnectionType::WebSocket,
+                    ConnectionStatus::Error,
+                    Some(format!("Shutdown error: {}", e)),
+                )
+                .await;
+        } else {
+            connection_monitor
+                .update_status(
+                    ConnectionType::WebSocket,
+                    ConnectionStatus::Disconnected,
+                    None,
+                )
+                .await;
+        }
     }
 
     async fn handle_websocket_message(

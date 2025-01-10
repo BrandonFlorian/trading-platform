@@ -3,9 +3,10 @@ use std::time::Instant;
 use tokio::sync::broadcast;
 
 use crate::models::{
-    CopyTradeNotification, DatabaseNotification, DatabaseOperationEvent, ErrorEvent,
-    ErrorNotification, SettingsUpdateNotification, TrackedWalletNotification,
-    TransactionLoggedNotification, WalletUpdateNotification,
+    ConnectionStatusNotification, CopyTradeNotification, DatabaseNotification,
+    DatabaseOperationEvent, ErrorEvent, ErrorNotification, SettingsUpdateNotification,
+    TrackedWalletNotification, TradeExecutionNotification, TransactionLoggedNotification,
+    WalletStateNotification, WalletUpdateNotification,
 };
 
 #[derive(Clone)]
@@ -17,6 +18,9 @@ pub enum Event {
     DatabaseOperation(DatabaseNotification),
     Error(ErrorNotification),
     SettingsUpdate(SettingsUpdateNotification),
+    WalletStateChange(WalletStateNotification),
+    ConnectionStatus(ConnectionStatusNotification),
+    TradeExecution(TradeExecutionNotification),
 }
 pub struct EventSystem {
     sender: broadcast::Sender<Event>,
@@ -29,6 +33,7 @@ impl EventSystem {
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        println!("Subscribing to events");
         self.sender.subscribe()
     }
 
@@ -37,30 +42,37 @@ impl EventSystem {
     }
 
     pub async fn handle_transaction_logged(&self, notification: TransactionLoggedNotification) {
+        println!("Handling transaction logged");
         self.emit(Event::TransactionLogged(notification));
     }
 
     pub async fn handle_copy_trade_executed(&self, notification: CopyTradeNotification) {
+        println!("Handling copy trade executed");
         self.emit(Event::CopyTradeExecution(notification));
     }
 
     pub async fn handle_tracked_wallet_trade(&self, notification: TrackedWalletNotification) {
+        println!("Handling tracked wallet trade");
         self.emit(Event::TrackedWalletTransaction(notification));
     }
 
     pub async fn handle_settings_update(&self, notification: SettingsUpdateNotification) {
+        println!("Handling settings update");
         self.emit(Event::SettingsUpdate(notification));
     }
 
     pub async fn handle_wallet_updated(&self, notification: WalletUpdateNotification) {
+        println!("Handling wallet update");
         self.emit(Event::WalletUpdate(notification));
     }
 
     pub async fn handle_database_operation(&self, notification: DatabaseNotification) {
+        println!("Handling database operation");
         self.emit(Event::DatabaseOperation(notification));
     }
 
     pub async fn handle_error(&self, notification: ErrorNotification) {
+        println!("Handling error");
         self.emit(Event::Error(notification));
     }
 

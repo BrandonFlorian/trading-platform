@@ -6,48 +6,62 @@ use solana_sdk::signer::Signer;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{env, sync::Arc};
 use tokio::signal;
-use trading_common::RedisConnection;
+use trading_common::wallet_client::WalletClient;
 use trading_common::{
-    database::SupabaseClient, event_system::EventSystem,
-    server_wallet_manager::ServerWalletManager, websocket::WebSocketServer,
+    database::SupabaseClient, event_system::EventSystem, websocket::WebSocketServer,
 };
-
+use trading_common::{ConnectionMonitor, RedisConnection};
 use wallet_monitor::WalletMonitor;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
 
+    // Solana
     let rpc_http_url = env::var("SOLANA_RPC_HTTP_URL").context("SOLANA_RPC_URL must be set")?;
     let rpc_ws_url = env::var("SOLANA_RPC_WS_URL").context("SOLANA_RPC_WS_URL must be set")?;
+
+    // Server wallet
     let server_secret_key =
         env::var("SERVER_WALLET_SECRET_KEY").context("SERVER_WALLET_SECRET_KEY must be set")?;
-    let supabase_url = env::var("SUPABASE_URL").context("SUPABASE_URL must be set")?;
-    let supabase_key =
-        env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
-    let supabase_service_role_key =
-        env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
-    let redis_url = env::var("REDIS_URL").context("REDIS_URL must be set")?;
+
     let server_keypair = Keypair::from_base58_string(&server_secret_key);
     if server_keypair.pubkey() == Pubkey::default() {
         return Err(anyhow::anyhow!("Invalid server secret key"));
     }
     let user_id = server_keypair.pubkey().to_string();
 
-    // Create a single event system
+    // Supabase
+    let supabase_url = env::var("SUPABASE_URL").context("SUPABASE_URL must be set")?;
+    let supabase_key =
+        env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
+    let supabase_service_role_key =
+        env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
+
+    // Redis
+    let redis_url = env::var("REDIS_URL").context("REDIS_URL must be set")?;
+
+    // Event system
     let event_system = Arc::new(EventSystem::new());
+
+    // Connection monitor
+    let connection_monitor = Arc::new(ConnectionMonitor::new(event_system.clone()));
+
+    // Wallet client
+    let wallet_addr =
+        std::env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
+    let wallet_client =
+        Arc::new(WalletClient::connect(wallet_addr, connection_monitor.clone()).await?);
 
     // Subscribe to settings updates from the API
     println!("Setting up Redis subscription...");
-    if let Err(e) =
-        RedisConnection::subscribe_to_settings_updates(&redis_url, event_system.clone()).await
-    {
+    if let Err(e) = RedisConnection::subscribe_to_updates(&redis_url, event_system.clone()).await {
         eprintln!("Failed to set up Redis subscription: {}", e);
-        // Don't fail startup, just log the error
     } else {
         println!("Redis subscription set up successfully");
     }
 
+    // Supabase client
     let supabase_client = Arc::new(SupabaseClient::new(
         &supabase_url,
         &supabase_key,
@@ -56,58 +70,35 @@ async fn main() -> Result<()> {
         event_system.clone(),
     ));
 
+    // RPC client
     let rpc_client = Arc::new(RpcClient::new(rpc_http_url));
 
-    // Initialize wallet manager with the same event system
-    let server_wallet_manager = Arc::new(tokio::sync::Mutex::new(
-        ServerWalletManager::new(
-            Arc::clone(&rpc_client),
-            server_keypair.pubkey(),
-            event_system.clone(), // Share the event system
-        )
-        .await
-        .context("Failed to initialize ServerWalletManager")?,
-    ));
-
-    // Print initial wallet state
-    {
-        let wallet_manager = server_wallet_manager.lock().await;
-        println!("Server Wallet Address: {}", server_keypair.pubkey());
-        println!(
-            "SOL Balance: {} SOL",
-            wallet_manager.get_sol_balance().await?
-        );
-        println!("Token Balances:");
-        for token_info in wallet_manager.get_token_values() {
-            println!(
-                "  {}: {} {}",
-                token_info.name, token_info.balance, token_info.symbol
-            );
-        }
-    }
-
+    // Wallet monitor
     let mut monitor = WalletMonitor::new(
         Arc::clone(&rpc_client),
         rpc_ws_url,
         Arc::clone(&supabase_client),
         server_keypair,
         event_system.clone(),
-        Arc::clone(&server_wallet_manager),
+        Arc::clone(&wallet_client),
+        Arc::clone(&connection_monitor),
     )
     .await?;
 
+    // WebSocket server
     let websocket_port = env::var("WS_PORT")
         .unwrap_or_else(|_| "3001".to_string())
         .parse()?;
 
     let ws_server = WebSocketServer::new(
         Arc::clone(&event_system),
-        Arc::clone(&server_wallet_manager),
+        Arc::clone(&wallet_client),
         supabase_client,
         websocket_port,
+        Arc::clone(&connection_monitor),
     );
 
-    // Start WebSocket server
+    //Start WebSocket server
     tokio::spawn(async move {
         if let Err(e) = ws_server.start().await {
             eprintln!("WebSocket server error: {}", e);
