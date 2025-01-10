@@ -8,16 +8,21 @@ use crate::{
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
-use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    sync::RwLock,
+    time::{Duration, Instant},
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
     time::interval,
 };
+
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 use uuid::Uuid;
+
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 struct ConnectionContext {
     supabase_client: Arc<SupabaseClient>,
@@ -85,11 +90,11 @@ impl WebSocketServer {
     pub async fn start(&self) -> Result<(), anyhow::Error> {
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
-        println!("WebSocket server listening on: {}", addr);
+        println!("WebSocket server listening for connections on: {}", addr);
 
-        while let Ok((stream, _)) = listener.accept().await {
-            let peer = stream.peer_addr().ok();
-            println!("New WebSocket connection from: {:?}", peer);
+        // Just wait for connections, no active state until client connects
+        while let Ok((stream, addr)) = listener.accept().await {
+            println!("New client connection attempt from: {}", addr);
 
             let event_system = Arc::clone(&self.event_system);
             let wallet_client = Arc::clone(&self.wallet_client);
@@ -99,19 +104,45 @@ impl WebSocketServer {
             tokio::spawn(async move {
                 match tokio_tungstenite::accept_async(stream).await {
                     Ok(ws_stream) => {
+                        println!("Client successfully connected and upgraded to WebSocket");
+                        connection_monitor
+                            .update_status(
+                                ConnectionType::WebSocket,
+                                ConnectionStatus::Connected,
+                                Some(format!("Client connected from {}", addr)),
+                            )
+                            .await;
+
                         if let Err(e) = Self::handle_connection(
                             ws_stream,
                             event_system,
                             wallet_client,
                             supabase_client,
-                            connection_monitor,
+                            connection_monitor.clone(),
+                            addr,
                         )
                         .await
                         {
-                            eprintln!("Connection error: {}", e);
+                            eprintln!("Client connection error: {}", e);
+                            connection_monitor
+                                .update_status(
+                                    ConnectionType::WebSocket,
+                                    ConnectionStatus::Disconnected,
+                                    Some(format!("Client disconnected due to error: {}", e)),
+                                )
+                                .await;
                         }
                     }
-                    Err(e) => eprintln!("WebSocket handshake error: {}", e),
+                    Err(e) => {
+                        eprintln!("Failed to accept client connection: {}", e);
+                        connection_monitor
+                            .update_status(
+                                ConnectionType::WebSocket,
+                                ConnectionStatus::Error,
+                                Some(format!("WebSocket upgrade failed: {}", e)),
+                            )
+                            .await;
+                    }
                 }
             });
         }
@@ -125,40 +156,45 @@ impl WebSocketServer {
         wallet_client: Arc<WalletClient>,
         supabase_client: Arc<SupabaseClient>,
         connection_monitor: Arc<ConnectionMonitor>,
+        addr: SocketAddr,
     ) -> Result<(), AppError> {
-        let (ws_sender, mut ws_receiver) = ws_stream.split(); // Remove mut from ws_sender
+        let (ws_sender, mut ws_receiver) = ws_stream.split();
         let mut event_rx = event_system.subscribe();
 
-        // Create the connection context
         let context = ConnectionContext {
             supabase_client: Arc::clone(&supabase_client),
             event_system: Arc::clone(&event_system),
             wallet_client: Arc::clone(&wallet_client),
         };
 
+        // Only start ping/pong after client is connected
         let mut ping_interval = interval(Duration::from_secs(60));
         let session = Arc::new(ClientSession::new(ws_sender));
+
+        println!("Starting client session {} for {}", session.id, addr);
 
         loop {
             tokio::select! {
                 _ = ping_interval.tick() => {
                     if !session.is_alive() {
+                        println!("Client {} session timeout", addr);
                         connection_monitor
                             .update_status(
                                 ConnectionType::WebSocket,
                                 ConnectionStatus::Error,
-                                Some("Client timeout - no pong received".to_string()),
+                                Some(format!("Client {} timeout - no pong received", addr)),
                             )
                             .await;
                         break;
                     }
 
                     if let Err(e) = session.send_message(Message::Ping(vec![].into())).await {
+                        println!("Failed to ping client {}: {}", addr, e);
                         connection_monitor
                             .update_status(
                                 ConnectionType::WebSocket,
                                 ConnectionStatus::Error,
-                                Some(format!("Failed to send ping: {}", e)),
+                                Some(format!("Failed to ping client {}: {}", addr, e)),
                             )
                             .await;
                         break;
@@ -217,7 +253,7 @@ impl WebSocketServer {
                 }
             }
         }
-
+        println!("Client {} session ended", addr);
         Ok(())
     }
 

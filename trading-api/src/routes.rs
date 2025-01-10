@@ -21,7 +21,7 @@ use trading_common::{
         buy::process_buy_request as process_raydium_buy,
         sell::process_sell_request as process_raydium_sell,
     },
-    CopyTradeSettings, TrackedWallet, TransactionLog,
+    CopyTradeSettings, TrackedWallet, TradeExecutionRequest, TransactionLog,
 };
 use uuid::Uuid;
 
@@ -282,6 +282,22 @@ pub async fn pump_fun_buy(
     let response = process_buy_request(&rpc_client, &server_keypair, request).await?;
 
     if response.success {
+        state
+            .wallet_client
+            .handle_trade_execution(TradeExecutionRequest {
+                signature: response.signature.clone(),
+                token_address: token_address.clone(),
+                transaction_type: "Buy".to_string(),
+                amount_token: response.token_quantity,
+                amount_sol: response.sol_spent,
+                price_per_token: response.sol_spent / response.token_quantity,
+                // Leave optional fields empty
+                token_name: String::new(),
+                token_symbol: String::new(),
+                token_image_uri: String::new(),
+            })
+            .await?;
+
         // Log successful manual trade
         let transaction_log = TransactionLog {
             id: Uuid::new_v4(),
@@ -338,6 +354,22 @@ pub async fn pump_fun_sell(
     let response = process_sell_request(&rpc_client, &server_keypair, request).await?;
 
     if response.success {
+        state
+            .wallet_client
+            .handle_trade_execution(TradeExecutionRequest {
+                signature: response.signature.clone(),
+                token_address: token_address.clone(),
+                transaction_type: "Sell".to_string(),
+                amount_token: response.token_quantity,
+                amount_sol: response.sol_received,
+                price_per_token: response.sol_received / response.token_quantity,
+                // Leave optional fields empty
+                token_name: String::new(),
+                token_symbol: String::new(),
+                token_image_uri: String::new(),
+            })
+            .await?;
+
         // Log successful manual trade
         let transaction_log = TransactionLog {
             id: Uuid::new_v4(),
@@ -393,6 +425,22 @@ pub async fn raydium_buy(
     let response = process_raydium_buy(&rpc_client, &server_keypair, &request).await?;
 
     if response.success {
+        state
+            .wallet_client
+            .handle_trade_execution(TradeExecutionRequest {
+                signature: response.signature.clone(),
+                token_address: token_address.clone(),
+                transaction_type: "Buy".to_string(),
+                amount_token: response.token_quantity,
+                amount_sol: response.sol_spent,
+                price_per_token: response.sol_spent / response.token_quantity,
+                // Leave optional fields empty
+                token_name: String::new(),
+                token_symbol: String::new(),
+                token_image_uri: String::new(),
+            })
+            .await?;
+
         // Log successful manual trade
         let transaction_log = TransactionLog {
             id: Uuid::new_v4(),
@@ -447,6 +495,22 @@ pub async fn raydium_sell(
     let response = process_raydium_sell(&rpc_client, &server_keypair, &request).await?;
 
     if response.success {
+        state
+            .wallet_client
+            .handle_trade_execution(TradeExecutionRequest {
+                signature: response.signature.clone(),
+                token_address: token_address.clone(),
+                transaction_type: "Sell".to_string(),
+                amount_token: response.token_quantity,
+                amount_sol: response.sol_received,
+                price_per_token: response.sol_received / response.token_quantity,
+                // Leave optional fields empty
+                token_name: String::new(),
+                token_symbol: String::new(),
+                token_image_uri: String::new(),
+            })
+            .await?;
+
         // Log successful manual trade
         let transaction_log = TransactionLog {
             id: Uuid::new_v4(),

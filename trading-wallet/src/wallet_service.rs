@@ -1,9 +1,14 @@
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
+use trading_common::data::get_metadata;
+use trading_common::data::TokenMetadata;
+use trading_common::dex::DexType;
 use trading_common::proto::wallet::{
     wallet_service_server::WalletService, RefreshBalancesRequest, RefreshBalancesResponse,
     SubscribeRequest, TokenInfo as ProtoTokenInfo, TradeExecutionRequest, TradeExecutionResponse,
@@ -13,6 +18,7 @@ use trading_common::{
     data::get_server_keypair, event_system::EventSystem, models::TokenInfo,
     server_wallet_manager::ServerWalletManager,
 };
+use trading_common::{ClientTxInfo, TransactionType};
 pub struct WalletServiceImpl {
     wallet_manager: Arc<Mutex<ServerWalletManager>>,
     event_system: Arc<EventSystem>,
@@ -76,44 +82,78 @@ impl WalletService for WalletServiceImpl {
 
     async fn handle_trade_execution(
         &self,
-        request: Request<TradeExecutionRequest>,
-    ) -> Result<Response<TradeExecutionResponse>, Status> {
+        request: tonic::Request<TradeExecutionRequest>,
+    ) -> Result<tonic::Response<TradeExecutionResponse>, tonic::Status> {
         let req = request.into_inner();
         let mut wallet_manager = self.wallet_manager.lock().await;
 
-        // Convert proto request to ClientTxInfo
-        let tx_info = trading_common::ClientTxInfo {
+        println!("Wallet service handling trade execution: {:?}", req);
+
+        // Fetch token metadata if not provided
+        let token_pubkey = Pubkey::from_str(&req.token_address)
+            .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+
+        let token_metadata = match get_metadata(&wallet_manager.rpc_client, &token_pubkey).await {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                println!("Failed to fetch token metadata: {}", e);
+                TokenMetadata {
+                    mint: token_pubkey.to_string(),
+                    name: "Unknown".to_string(),
+                    symbol: "???".to_string(),
+                    uri: "".to_string(),
+                    update_authority: "".to_string(),
+                }
+            }
+        };
+
+        // Convert to ClientTxInfo with enriched data
+        let tx_info = ClientTxInfo {
             signature: req.signature,
             token_address: req.token_address,
-            token_name: req.token_name,
-            token_symbol: req.token_symbol,
+            token_name: token_metadata.name,
+            token_symbol: token_metadata.symbol,
             transaction_type: match req.transaction_type.as_str() {
-                "Buy" => trading_common::TransactionType::Buy,
-                "Sell" => trading_common::TransactionType::Sell,
-                _ => trading_common::TransactionType::Unknown,
+                "Buy" => TransactionType::Buy,
+                "Sell" => TransactionType::Sell,
+                _ => TransactionType::Unknown,
             },
             amount_token: req.amount_token,
             amount_sol: req.amount_sol,
             price_per_token: req.price_per_token,
-            token_image_uri: req.token_image_uri,
-            market_cap: 0.0, // Add if needed
+            token_image_uri: token_metadata.uri,
+            market_cap: 0.0,
             usd_market_cap: 0.0,
             timestamp: chrono::Utc::now().timestamp(),
-            seller: String::new(), // Add if needed
+            seller: String::new(),
             buyer: String::new(),
-            dex_type: trading_common::dex::DexType::Unknown, // Add if needed
+            dex_type: DexType::Unknown,
         };
 
-        match wallet_manager.handle_trade_execution(&tx_info).await {
-            Ok(_) => Ok(Response::new(TradeExecutionResponse {
-                success: true,
-                error: None,
-            })),
-            Err(e) => Ok(Response::new(TradeExecutionResponse {
+        // Update internal state
+        if let Err(e) = wallet_manager.handle_trade_execution(&tx_info).await {
+            println!("Error handling trade execution: {}", e);
+            return Ok(Response::new(TradeExecutionResponse {
                 success: false,
                 error: Some(e.to_string()),
-            })),
+            }));
         }
+
+        println!("Trade execution handled successfully, refreshing balances");
+
+        // Refresh balances to get latest state
+        if let Err(e) = wallet_manager.refresh_balances().await {
+            println!("Error refreshing balances: {}", e);
+            return Ok(Response::new(TradeExecutionResponse {
+                success: false,
+                error: Some(format!("Failed to refresh balances: {}", e)),
+            }));
+        }
+
+        Ok(Response::new(TradeExecutionResponse {
+            success: true,
+            error: None,
+        }))
     }
 
     type SubscribeToUpdatesStream =
