@@ -22,7 +22,6 @@ The project is organized as a Rust workspace with four main components:
    - CRUD operations for tracked wallets and settings
    - Trade execution endpoints
    - Multi-DEX integration endpoints
-   - WebSocket server for real-time updates
    - Redis-based event broadcasting
 
 3. `trading-bot`: Core trading engine
@@ -30,6 +29,7 @@ The project is organized as a Rust workspace with four main components:
    - WebSocket-based wallet monitoring
    - Automated copy trading execution
    - Real-time balance tracking
+   - WebSocket server for real-time updates to the front-end
    - Event-driven architecture
    - Redis subscription for settings updates
 
