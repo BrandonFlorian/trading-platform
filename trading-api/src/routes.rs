@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -5,16 +7,16 @@ use axum::{
     Json,
 };
 use chrono::Utc;
-use serde_json::json;
-use solana_sdk::signer::Signer;
+use serde_json::{json, Value};
+use solana_sdk::{pubkey::Pubkey, signer::Signer};
 use trading_common::{
-    data::get_server_keypair,
+    data::{get_metadata, get_server_keypair},
     error::AppError,
     event_system::Event,
     models::{
         BuyRequest, BuyResponse, SellRequest, SellResponse, SettingsUpdateNotification,
-        TradeExecution, TradeExecutionNotification, WalletStateChange, WalletStateChangeType,
-        WalletStateNotification,
+        TradeExecution, TradeExecutionNotification, TransactionLoggedNotification,
+        WalletStateChange, WalletStateChangeType, WalletStateNotification,
     },
     pumpdotfun::{buy::process_buy_request, sell::process_sell_request},
     raydium::{
@@ -549,6 +551,31 @@ pub async fn raydium_sell(
             // Continue with response even if logging fails
         }
     }
+
+    Ok(Json(response))
+}
+
+pub async fn get_token_metadata(
+    State(state): State<AppState>,
+    Path(token_address): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    // Validate token address first
+    let token_pubkey = Pubkey::from_str(&token_address)
+        .map_err(|_| AppError::BadRequest("Invalid token address".to_string()))?;
+
+    let rpc_client = state.rpc_client.load();
+
+    let metadata = get_metadata(&rpc_client, &token_pubkey)
+        .await
+        .map_err(|e| AppError::ServerError(format!("Failed to fetch token metadata: {}", e)))?;
+
+    let response = json!({
+        "address": token_address,
+        "name": metadata.name,
+        "symbol": metadata.symbol,
+        "uri": metadata.uri,
+        "update_authority": metadata.update_authority,
+    });
 
     Ok(Json(response))
 }

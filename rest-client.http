@@ -111,3 +111,9 @@ Content-Type: application/json
     "token_quantity": 1000,
     "slippage_tolerance": 0.2
 }
+
+### Get token metadata
+GET {{baseUrl}}/token_metadata/{{pumpFunTokenAddress}}
+
+### Get token metadata
+GET {{baseUrl}}/token_metadata/{{raydiumTokenAddress}}

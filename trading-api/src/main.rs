@@ -145,6 +145,10 @@ async fn main() -> Result<()> {
         .route("/pump_fun/sell", post(routes::pump_fun_sell))
         .route("/raydium/buy", post(routes::raydium_buy))
         .route("/raydium/sell", post(routes::raydium_sell))
+        .route(
+            "/token_metadata/:token_address",
+            get(routes::get_token_metadata),
+        )
         .with_state(state)
         .layer(cors);
     let port = env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());
