@@ -15,13 +15,13 @@ use trading_common::{
         ClientTxInfo, ConnectionStatus, ConnectionType, CopyTradeNotification, CopyTradeSettings,
         TrackedWallet, TrackedWalletNotification, TransactionLoggedNotification,
     },
+    server_wallet_client::WalletClient,
     utils::{
         copy_trade::{execute_copy_trade, should_copy_trade},
         transaction::process_websocket_message,
     },
-    wallet_client::WalletClient,
     websocket::{WebSocketConfig, WebSocketConnectionManager},
-    ConnectionMonitor, TransactionLog,
+    ConnectionMonitor, TradeExecutionRequest, TransactionLog,
 };
 use uuid::Uuid;
 
@@ -85,9 +85,6 @@ impl WalletMonitor {
             .map_err(|e| {
                 AppError::InitializationError(format!("Failed to fetch settings: {}", e))
             })?;
-
-        println!("Fetched {} tracked wallets", tracked_wallets.len());
-        println!("Fetched {} copy trade settings", copy_trade_settings.len());
 
         let (tx, rx) = mpsc::unbounded_channel();
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
@@ -184,6 +181,9 @@ impl WalletMonitor {
                         }
                         Event::ConnectionStatus(notification) => {
                             println!("Event - Received connection status: {:?}", notification.data);
+                        }
+                        Event::WalletUpdate(notification) => {
+                            println!("Event - Received wallet update: {:?}", notification.data);
                         }
                         _ => {}
                     }
@@ -288,30 +288,16 @@ impl WalletMonitor {
         client_message: ClientTxInfo,
         wallet_client: &Arc<WalletClient>,
     ) -> Result<(), AppError> {
-        println!("----------------------");
-        println!("Handling transaction: {}", client_message.signature);
-        println!("Transaction type: {:?}", client_message.transaction_type);
-        println!(
-            "Token: {} ({}) - {}",
-            client_message.token_name, client_message.token_symbol, client_message.token_address
-        );
-
-        println!("Transaction Details:");
-        println!(
-            "  Amount Token: {} {}",
-            client_message.amount_token, client_message.token_symbol
-        );
-        println!("  Amount SOL: {} SOL", client_message.amount_sol);
-        println!("  Price per Token: {} SOL", client_message.price_per_token);
-        println!("  Seller: {}", client_message.seller);
-        println!("  Buyer: {}", client_message.buyer);
-        println!("  DEX Type: {:?}", client_message.dex_type);
+        // First, emit tracked wallet trade notification immediately
+        event_system.emit(Event::TrackedWalletTransaction(TrackedWalletNotification {
+            data: client_message.clone(),
+            type_: "tracked_wallet_trade".to_string(),
+        }));
 
         // Check copy trading settings
         if let Some(settings) = copy_trade_settings.as_ref().and_then(|s| s.first()) {
             if settings.is_enabled {
-                println!("Copy trading enabled with settings: {:?}", settings);
-
+                // Process copy trade
                 match Self::process_copy_trade(
                     rpc_client,
                     server_keypair,
@@ -322,8 +308,15 @@ impl WalletMonitor {
                 .await
                 {
                     Ok(_) => {
-                        // Let the wallet service know about the trade
-                        let trade_request = trading_common::proto::wallet::TradeExecutionRequest {
+                        let notification = CopyTradeNotification {
+                            data: client_message.clone(),
+                            type_: "copy_trade_executed".to_string(),
+                        };
+
+                        // Emit copy trade notification after successful execution
+                        event_system.emit(Event::CopyTradeExecution(notification));
+
+                        let trade_execution_request = TradeExecutionRequest {
                             signature: client_message.signature.clone(),
                             token_address: client_message.token_address.clone(),
                             token_name: client_message.token_name.clone(),
@@ -335,21 +328,15 @@ impl WalletMonitor {
                             token_image_uri: client_message.token_image_uri.clone(),
                         };
 
-                        wallet_client
-                            .handle_trade_execution(trade_request)
-                            .await
-                            .map_err(|e| {
-                                AppError::ServerError(format!("Failed to update wallet: {}", e))
-                            })?;
-
-                        event_system
-                            .handle_copy_trade_executed(CopyTradeNotification {
-                                data: client_message.clone(),
-                                type_: "copy_trade_executed".to_string(),
-                            })
-                            .await;
+                        let wallet_client = wallet_client.clone();
+                        tokio::spawn(async move {
+                            wallet_client
+                                .handle_trade_execution(trade_execution_request)
+                                .await
+                        });
                     }
                     Err(e) => {
+                        //should maybe also emit a notification here
                         println!("Copy trade failed: {}", e);
                         return Err(AppError::MessageProcessingError(format!(
                             "Copy trade failed: {}",
@@ -360,10 +347,11 @@ impl WalletMonitor {
             }
         }
 
+        // Create and log transaction after processing
         let transaction_log = TransactionLog {
             id: Uuid::new_v4(),
             user_id: server_keypair.pubkey().to_string(),
-            tracked_wallet_id: None, // todo: should probably track this in ClientTxInfo
+            tracked_wallet_id: None,
             signature: client_message.signature.clone(),
             transaction_type: format!("{:?}", client_message.transaction_type),
             token_address: client_message.token_address.clone(),
@@ -372,22 +360,11 @@ impl WalletMonitor {
             timestamp: chrono::Utc::now(),
         };
 
-        // Log to database after successful processing
-        event_system
-            .handle_transaction_logged(TransactionLoggedNotification {
-                data: transaction_log.clone(),
-                type_: "transaction_logged".to_string(),
-            })
-            .await;
-
-        // Send notification for transaction
-        Self::send_notification(event_system, client_message)
-            .await
-            .map_err(|e| {
-                AppError::MessageProcessingError(format!("Failed to send notification: {}", e))
-            })?;
-
-        println!("----------------------");
+        // Emit transaction logged notification last
+        event_system.emit(Event::TransactionLogged(TransactionLoggedNotification {
+            data: transaction_log.clone(),
+            type_: "transaction_logged".to_string(),
+        }));
 
         Ok(())
     }
@@ -421,20 +398,6 @@ impl WalletMonitor {
         .map_err(|e| {
             AppError::MessageProcessingError(format!("Execute copy trade failed: {}", e))
         })?;
-
-        Ok(())
-    }
-
-    async fn send_notification(
-        event_system: &Arc<EventSystem>,
-        client_message: ClientTxInfo,
-    ) -> Result<(), AppError> {
-        let notification = TrackedWalletNotification {
-            type_: "tracked_wallet_trade".to_string(),
-            data: client_message,
-        };
-
-        event_system.handle_tracked_wallet_trade(notification).await;
 
         Ok(())
     }
@@ -644,7 +607,7 @@ impl WalletMonitor {
     ) -> Result<(), AppError> {
         match message {
             Message::Text(text) => {
-                println!("Received WebSocket message: {}", text);
+                // println!("Received WebSocket message: {}", text);
                 if let Some(tx_info) = process_websocket_message(text.as_str(), rpc_client)
                     .await
                     .map_err(|e| {

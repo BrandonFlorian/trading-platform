@@ -6,9 +6,9 @@ use solana_sdk::signer::Signer;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{env, sync::Arc};
 use tokio::signal;
-use trading_common::wallet_client::WalletClient;
 use trading_common::{
-    database::SupabaseClient, event_system::EventSystem, websocket::WebSocketServer,
+    database::SupabaseClient, event_system::EventSystem, server_wallet_client::WalletClient,
+    websocket::WebSocketServer,
 };
 use trading_common::{ConnectionMonitor, RedisConnection};
 use wallet_monitor::WalletMonitor;

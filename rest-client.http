@@ -117,3 +117,6 @@ GET {{baseUrl}}/token_metadata/{{pumpFunTokenAddress}}
 
 ### Get token metadata
 GET {{baseUrl}}/token_metadata/{{raydiumTokenAddress}}
+
+### Trigger wallet update
+POST {{baseUrl}}/wallet/update

@@ -12,6 +12,7 @@ pub mod utils {
     pub mod transaction;
 }
 pub mod wallet {
+    pub mod server_wallet_client;
     pub mod server_wallet_manager;
 }
 
@@ -21,7 +22,7 @@ pub mod events {
 pub mod connection_monitor;
 pub mod proto;
 pub mod redis_connection;
-pub mod wallet_client;
+
 pub use constants::{
     ASSOCIATED_TOKEN_PROGRAM_ID, EVENT_AUTHORITY, FEE_RECIPIENT, GLOBAL, OPEN_BOOK_PROGRAM,
     PUMP_FUN_PROGRAM_ID, RAY_AUTHORITY_V4, RAY_V4, RENT, SYSTEM_PROGRAM, TOKEN_KEG_PROGRAM_ID,

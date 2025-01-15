@@ -16,11 +16,16 @@ services:
     ports:
       - "50051:50051"
   api:
+    build:
+      context: .
+      dockerfile: trading-api/Dockerfile
     depends_on:
       - wallet
       - redis
-
   bot:
+    build:
+      context: .
+      dockerfile: trading-bot/Dockerfile
     depends_on:
       - wallet
       - redis

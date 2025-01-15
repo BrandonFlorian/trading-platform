@@ -348,3 +348,42 @@ pub struct TradeExecutionNotification {
     #[serde(rename = "type")]
     pub type_: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TransactionState {
+    Submitted,      // Transaction sent to network
+    Confirmed,      // Transaction confirmed on chain
+    Failed(String), // Transaction failed with error message
+    Dropped,        // Transaction dropped from mempool
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionStateChange {
+    pub signature: String,
+    pub state: TransactionState,
+    pub timestamp: DateTime<Utc>,
+    pub details: Option<serde_json::Value>,
+}
+
+impl TransactionStateChange {
+    pub fn new(signature: String, state: TransactionState) -> Self {
+        Self {
+            signature,
+            state,
+            timestamp: Utc::now(),
+            details: None,
+        }
+    }
+
+    pub fn with_details(mut self, details: impl Into<serde_json::Value>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionStateNotification {
+    pub data: TransactionStateChange,
+    #[serde(rename = "type")]
+    pub type_: String,
+}

@@ -3,9 +3,8 @@ use crate::models::{TokenInfo, WalletUpdate, WalletUpdateNotification};
 use crate::utils::data::{
     extract_token_account_info, format_balance, format_token_amount, get_metadata,
 };
-use crate::{ClientTxInfo, TransactionType};
+use crate::ClientTxInfo;
 use anyhow::{Context, Result};
-use serde::Serialize;
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_request::TokenAccountsFilter;
 use solana_sdk::pubkey::Pubkey;
@@ -161,11 +160,17 @@ impl ServerWalletManager {
     }
 
     pub fn emit_wallet_update(&self) {
+        let wallet_info = self.get_wallet_info();
+        println!("Emitting wallet update with data: {:?}", wallet_info);
+
         let notification = WalletUpdateNotification {
-            data: self.get_wallet_info(),
+            data: wallet_info,
             type_: "wallet_update".to_string(),
         };
+
+        println!("Created wallet update notification");
         self.event_system.emit(Event::WalletUpdate(notification));
+        println!("Wallet update event emitted");
     }
 
     pub fn get_wallet_info(&self) -> WalletUpdate {
@@ -206,6 +211,7 @@ impl ServerWalletManager {
             "Final state - SOL: {}, Tokens: {:?}",
             self.balance, self.tokens
         );
+
         Ok(())
     }
 }
