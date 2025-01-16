@@ -111,3 +111,6 @@ Content-Type: application/json
     "token_quantity": 1000,
     "slippage_tolerance": 0.2
 }
+
+### Get wallet details
+GET {{baseUrl}}/wallet/{{walletAddress}}
