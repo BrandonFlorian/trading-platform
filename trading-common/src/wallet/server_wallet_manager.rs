@@ -9,7 +9,7 @@ use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_request::TokenAccountsFilter;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use surf::Client;
@@ -21,6 +21,7 @@ pub struct ServerWalletManager {
     pub balance: f64,
     pub tokens: HashMap<String, TokenInfo>,
     pub event_system: Arc<EventSystem>,
+    processed_signatures: HashSet<String>,
 }
 
 impl ServerWalletManager {
@@ -36,6 +37,7 @@ impl ServerWalletManager {
             balance: 0.0,
             tokens: HashMap::new(),
             event_system,
+            processed_signatures: HashSet::new(),
         };
         manager.refresh_balances().await?;
         Ok(manager)
@@ -124,6 +126,7 @@ impl ServerWalletManager {
         self.balance += amount;
         self.emit_wallet_update();
     }
+
     pub fn update_token_balance(
         &mut self,
         token_address: &str,
@@ -161,7 +164,6 @@ impl ServerWalletManager {
 
     pub fn emit_wallet_update(&self) {
         let wallet_info = self.get_wallet_info();
-        println!("Emitting wallet update with data: {:?}", wallet_info);
 
         let notification = WalletUpdateNotification {
             data: wallet_info,
@@ -191,6 +193,11 @@ impl ServerWalletManager {
     }
 
     pub async fn handle_trade_execution(&mut self, tx_info: &ClientTxInfo) -> Result<()> {
+        if !self.processed_signatures.insert(tx_info.signature.clone()) {
+            println!("Transaction already processed: {}", tx_info.signature);
+            return Ok(());
+        }
+
         println!("Server wallet handling trade execution: {:?}", tx_info);
 
         let signature = Signature::from_str(&tx_info.signature)?;
@@ -205,7 +212,6 @@ impl ServerWalletManager {
             }
         }
 
-        // Single refresh once we know the transaction is final
         self.refresh_balances().await?;
         println!(
             "Final state - SOL: {}, Tokens: {:?}",

@@ -7,10 +7,11 @@ use std::sync::Arc;
 
 use crate::dex::DexType;
 use crate::models::SellRequest;
-use crate::raydium;
+use crate::server_wallet_client::WalletClient;
 use crate::utils::data::get_token_balance;
 use crate::{models::BuyRequest, ClientTxInfo, CopyTradeSettings, TransactionType};
 use crate::{pumpdotfun, WalletInfoResponse};
+use crate::{raydium, TradeExecutionRequest};
 
 pub async fn should_copy_trade(
     tx_info: &ClientTxInfo,
@@ -66,6 +67,7 @@ pub async fn execute_copy_trade(
     tx_info: &ClientTxInfo,
     settings: &CopyTradeSettings,
     dex_type: DexType,
+    wallet_client: &Arc<WalletClient>,
 ) -> Result<()> {
     match tx_info.transaction_type {
         TransactionType::Buy => {
@@ -75,28 +77,37 @@ pub async fn execute_copy_trade(
                 slippage_tolerance: settings.max_slippage,
             };
 
-            match dex_type {
+            let response = match dex_type {
                 DexType::PumpFun => {
-                    println!("Executing Pump.fun buy");
-                    let response =
-                        pumpdotfun::process_buy_request(rpc_client, server_keypair, request)
-                            .await?;
-                    if response.success {
-                        println!("Pump.fun copy trade buy executed: {}", response.signature);
-                    }
+                    pumpdotfun::process_buy_request(rpc_client, server_keypair, request).await?
                 }
                 DexType::Raydium => {
-                    println!("Executing Raydium buy");
-                    let response =
-                        raydium::process_buy_request(rpc_client, server_keypair, &request).await?;
-                    if response.success {
-                        println!("Raydium copy trade buy executed: {}", response.signature);
-                    }
+                    raydium::process_buy_request(rpc_client, server_keypair, &request).await?
                 }
                 DexType::Unknown => {
-                    println!("Unknown DEX type, cannot execute buy");
-                    return Ok(());
+                    return Err(anyhow::anyhow!("Unknown DEX type"));
                 }
+            };
+
+            if response.success {
+                let wallet_client = wallet_client.clone();
+                let trade_request = TradeExecutionRequest {
+                    signature: response.signature.clone(),
+                    token_address: tx_info.token_address.clone(),
+                    transaction_type: "buy".to_string(),
+                    amount_token: response.token_quantity,
+                    amount_sol: response.sol_spent,
+                    price_per_token: response.sol_spent / response.token_quantity,
+                    token_name: tx_info.token_name.clone(),
+                    token_symbol: tx_info.token_symbol.clone(),
+                    token_image_uri: tx_info.token_image_uri.clone(),
+                };
+
+                tokio::spawn(async move {
+                    if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
+                        eprintln!("Error updating wallet state: {}", e);
+                    }
+                });
             }
         }
         TransactionType::Sell => {
@@ -147,39 +158,39 @@ pub async fn execute_copy_trade(
                     slippage_tolerance: settings.max_slippage,
                 };
 
-                match dex_type {
+                let response = match dex_type {
                     DexType::PumpFun => {
-                        println!("Executing Pump.fun sell");
-                        let response =
-                            pumpdotfun::process_sell_request(rpc_client, server_keypair, request)
-                                .await?;
-                        if response.success {
-                            println!("Pump.fun copy trade sell executed: {}", response.signature);
-                            println!(
-                                "  Amount sold: {} {}",
-                                response.token_quantity, tx_info.token_symbol
-                            );
-                            println!("  SOL received: {} SOL", response.sol_received);
-                        }
+                        pumpdotfun::process_sell_request(rpc_client, server_keypair, request)
+                            .await?
                     }
                     DexType::Raydium => {
-                        println!("Executing Raydium sell");
-                        let response =
-                            raydium::process_sell_request(rpc_client, server_keypair, &request)
-                                .await?;
-                        if response.success {
-                            println!("Raydium copy trade sell executed: {}", response.signature);
-                            println!(
-                                "  Amount sold: {} {}",
-                                response.token_quantity, tx_info.token_symbol
-                            );
-                            println!("  SOL received: {} SOL", response.sol_received);
-                        }
+                        raydium::process_sell_request(rpc_client, server_keypair, &request).await?
                     }
                     DexType::Unknown => {
-                        println!("Unknown DEX type, cannot execute sell");
-                        return Ok(());
+                        return Err(anyhow::anyhow!("Unknown DEX type"));
                     }
+                };
+
+                if response.success {
+                    println!("Copy trade sell executed: {}", response.signature);
+                    let wallet_client = wallet_client.clone();
+                    let trade_request = TradeExecutionRequest {
+                        signature: response.signature.clone(),
+                        token_address: tx_info.token_address.clone(),
+                        transaction_type: "sell".to_string(),
+                        amount_token: token_balance,
+                        amount_sol: response.sol_received,
+                        price_per_token: response.sol_received / token_balance,
+                        token_name: tx_info.token_name.clone(),
+                        token_symbol: tx_info.token_symbol.clone(),
+                        token_image_uri: tx_info.token_image_uri.clone(),
+                    };
+
+                    tokio::spawn(async move {
+                        if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
+                            eprintln!("Error updating wallet state: {}", e);
+                        }
+                    });
                 }
             } else {
                 println!("No tokens to sell");

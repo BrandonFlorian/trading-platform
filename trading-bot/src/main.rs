@@ -93,7 +93,6 @@ async fn main() -> Result<()> {
     let ws_server = WebSocketServer::new(
         Arc::clone(&event_system),
         Arc::clone(&wallet_client),
-        supabase_client,
         websocket_port,
         Arc::clone(&connection_monitor),
     );

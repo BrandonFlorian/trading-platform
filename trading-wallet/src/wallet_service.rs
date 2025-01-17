@@ -222,6 +222,7 @@ impl WalletService for WalletServiceImpl {
         _request: Request<EmitWalletUpdateRequest>,
     ) -> Result<Response<EmitWalletUpdateResponse>, Status> {
         let wallet_manager = self.wallet_manager.lock().await;
+
         wallet_manager.emit_wallet_update();
         Ok(Response::new(EmitWalletUpdateResponse {
             success: true,

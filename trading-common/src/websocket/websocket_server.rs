@@ -3,7 +3,7 @@ use crate::{
     event_system::{Event, EventSystem},
     models::{ConnectionStatus, ConnectionType, WalletUpdateNotification},
     server_wallet_client::WalletClient,
-    ConnectionMonitor, SupabaseClient,
+    ConnectionMonitor,
 };
 
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
@@ -25,11 +25,6 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 use uuid::Uuid;
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
-struct ConnectionContext {
-    supabase_client: Arc<SupabaseClient>,
-    event_system: Arc<EventSystem>,
-    wallet_client: Arc<WalletClient>,
-}
 
 #[derive(Debug)]
 struct ClientSession {
@@ -67,7 +62,6 @@ impl ClientSession {
 pub struct WebSocketServer {
     event_system: Arc<EventSystem>,
     wallet_client: Arc<WalletClient>,
-    supabase_client: Arc<SupabaseClient>,
     port: u16,
     connection_monitor: Arc<ConnectionMonitor>,
 }
@@ -76,14 +70,12 @@ impl WebSocketServer {
     pub fn new(
         event_system: Arc<EventSystem>,
         wallet_client: Arc<WalletClient>,
-        supabase_client: Arc<SupabaseClient>,
         port: u16,
         connection_monitor: Arc<ConnectionMonitor>,
     ) -> Self {
         Self {
             event_system,
             wallet_client,
-            supabase_client,
             port,
             connection_monitor,
         }
@@ -99,7 +91,6 @@ impl WebSocketServer {
 
             let event_system = Arc::clone(&self.event_system);
             let wallet_client = Arc::clone(&self.wallet_client);
-            let supabase_client = Arc::clone(&self.supabase_client);
             let connection_monitor = Arc::clone(&self.connection_monitor);
 
             tokio::spawn(async move {
@@ -118,7 +109,6 @@ impl WebSocketServer {
                             ws_stream,
                             event_system,
                             wallet_client,
-                            supabase_client,
                             connection_monitor.clone(),
                             addr,
                         )
@@ -155,7 +145,6 @@ impl WebSocketServer {
         ws_stream: WebSocketStream<TcpStream>,
         event_system: Arc<EventSystem>,
         wallet_client: Arc<WalletClient>,
-        supabase_client: Arc<SupabaseClient>,
         connection_monitor: Arc<ConnectionMonitor>,
         addr: SocketAddr,
     ) -> Result<(), AppError> {
@@ -194,12 +183,6 @@ impl WebSocketServer {
                 }));
             }
         });
-
-        let context = ConnectionContext {
-            supabase_client: Arc::clone(&supabase_client),
-            event_system: Arc::clone(&event_system),
-            wallet_client: Arc::clone(&wallet_client),
-        };
 
         // Only start ping/pong after client is connected
         let mut ping_interval = interval(Duration::from_secs(60));
@@ -252,7 +235,7 @@ impl WebSocketServer {
                             break;
                         }
                         Ok(Message::Text(text)) => {
-                            if let Err(e) = Self::handle_command(&context, &text, &session).await {
+                            if let Err(e) = Self::handle_command(&text, &session).await {
                                 let error_msg = json!({
                                     "type": "error",
                                     "data": {
@@ -352,15 +335,10 @@ impl WebSocketServer {
         session
             .send_message(Message::Text(msg.to_string().into()))
             .await?;
-        println!("Successfully sent event to client");
         Ok(())
     }
 
-    async fn handle_command(
-        context: &ConnectionContext,
-        text: &str,
-        session: &ClientSession,
-    ) -> Result<(), anyhow::Error> {
+    async fn handle_command(text: &str, session: &ClientSession) -> Result<(), anyhow::Error> {
         let command: CommandMessage = serde_json::from_str(text)?;
 
         match command {

@@ -21,7 +21,7 @@ use trading_common::{
         transaction::process_websocket_message,
     },
     websocket::{WebSocketConfig, WebSocketConnectionManager},
-    ConnectionMonitor, TradeExecutionRequest, TransactionLog,
+    ConnectionMonitor, TransactionLog,
 };
 use uuid::Uuid;
 
@@ -312,28 +312,25 @@ impl WalletMonitor {
                             data: client_message.clone(),
                             type_: "copy_trade_executed".to_string(),
                         };
-
-                        // Emit copy trade notification after successful execution
                         event_system.emit(Event::CopyTradeExecution(notification));
 
-                        let trade_execution_request = TradeExecutionRequest {
+                        let transaction_log = TransactionLog {
+                            id: Uuid::new_v4(),
+                            user_id: server_keypair.pubkey().to_string(),
+                            tracked_wallet_id: None,
                             signature: client_message.signature.clone(),
+                            transaction_type: "buy".to_string(),
                             token_address: client_message.token_address.clone(),
-                            token_name: client_message.token_name.clone(),
-                            token_symbol: client_message.token_symbol.clone(),
-                            transaction_type: format!("{:?}", client_message.transaction_type),
-                            amount_token: client_message.amount_token,
-                            amount_sol: client_message.amount_sol,
-                            price_per_token: client_message.price_per_token,
-                            token_image_uri: client_message.token_image_uri.clone(),
+                            amount: client_message.amount_token,
+                            price_sol: client_message.price_per_token,
+                            timestamp: chrono::Utc::now(),
                         };
-
-                        let wallet_client = wallet_client.clone();
-                        tokio::spawn(async move {
-                            wallet_client
-                                .handle_trade_execution(trade_execution_request)
-                                .await
-                        });
+                        event_system.emit(Event::TransactionLogged(
+                            TransactionLoggedNotification {
+                                data: transaction_log.clone(),
+                                type_: "transaction_logged".to_string(),
+                            },
+                        ));
                     }
                     Err(e) => {
                         //should maybe also emit a notification here
@@ -346,25 +343,6 @@ impl WalletMonitor {
                 }
             }
         }
-
-        // Create and log transaction after processing
-        let transaction_log = TransactionLog {
-            id: Uuid::new_v4(),
-            user_id: server_keypair.pubkey().to_string(),
-            tracked_wallet_id: None,
-            signature: client_message.signature.clone(),
-            transaction_type: format!("{:?}", client_message.transaction_type),
-            token_address: client_message.token_address.clone(),
-            amount: client_message.amount_token,
-            price_sol: client_message.price_per_token,
-            timestamp: chrono::Utc::now(),
-        };
-
-        // Emit transaction logged notification last
-        event_system.emit(Event::TransactionLogged(TransactionLoggedNotification {
-            data: transaction_log.clone(),
-            type_: "transaction_logged".to_string(),
-        }));
 
         Ok(())
     }
@@ -387,12 +365,18 @@ impl WalletMonitor {
             return Ok(());
         }
 
+        println!(
+            "Copy trade about to execute for token: {}",
+            client_message.token_address
+        );
+
         execute_copy_trade(
             rpc_client,
             server_keypair,
             client_message,
             settings,
             client_message.dex_type.clone(),
+            wallet_client,
         )
         .await
         .map_err(|e| {
@@ -607,7 +591,6 @@ impl WalletMonitor {
     ) -> Result<(), AppError> {
         match message {
             Message::Text(text) => {
-                // println!("Received WebSocket message: {}", text);
                 if let Some(tx_info) = process_websocket_message(text.as_str(), rpc_client)
                     .await
                     .map_err(|e| {
