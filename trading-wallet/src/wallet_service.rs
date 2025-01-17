@@ -14,6 +14,8 @@ use trading_common::proto::wallet::{
     SubscribeRequest, TokenInfo as ProtoTokenInfo, TradeExecutionRequest, TradeExecutionResponse,
     WalletInfoRequest, WalletInfoResponse, WalletUpdate,
 };
+use trading_common::EmitWalletUpdateRequest;
+use trading_common::EmitWalletUpdateResponse;
 use trading_common::{
     data::get_server_keypair, event_system::EventSystem, models::TokenInfo,
     server_wallet_manager::ServerWalletManager,
@@ -87,8 +89,6 @@ impl WalletService for WalletServiceImpl {
         let req = request.into_inner();
         let mut wallet_manager = self.wallet_manager.lock().await;
 
-        println!("Wallet service handling trade execution: {:?}", req);
-
         // Fetch token metadata if not provided
         let token_pubkey = Pubkey::from_str(&req.token_address)
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
@@ -139,17 +139,7 @@ impl WalletService for WalletServiceImpl {
             }));
         }
 
-        println!("Trade execution handled successfully, refreshing balances");
-
-        // Refresh balances to get latest state
-        if let Err(e) = wallet_manager.refresh_balances().await {
-            println!("Error refreshing balances: {}", e);
-            return Ok(Response::new(TradeExecutionResponse {
-                success: false,
-                error: Some(format!("Failed to refresh balances: {}", e)),
-            }));
-        }
-
+        println!("Trade execution handled successfully");
         Ok(Response::new(TradeExecutionResponse {
             success: true,
             error: None,
@@ -163,11 +153,17 @@ impl WalletService for WalletServiceImpl {
         &self,
         _request: Request<SubscribeRequest>,
     ) -> Result<Response<Self::SubscribeToUpdatesStream>, Status> {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let (tx, rx) = tokio::sync::mpsc::channel(200); // Increase buffer size
         let mut event_rx = self.event_system.subscribe();
+
+        println!("Created wallet update subscription channel");
 
         tokio::spawn(async move {
             while let Ok(event) = event_rx.recv().await {
+                println!(
+                    "Received event in subscription: {:?}",
+                    std::mem::discriminant(&event)
+                );
                 if let trading_common::event_system::Event::WalletUpdate(notification) = event {
                     let update = WalletUpdate {
                         balance: notification.data.balance,
@@ -188,11 +184,14 @@ impl WalletService for WalletServiceImpl {
                         address: notification.data.address,
                     };
 
-                    if tx.send(Ok(update)).await.is_err() {
+                    println!("Sending wallet update through channel");
+                    if let Err(e) = tx.send(Ok(update)).await {
+                        println!("Failed to send wallet update: {}", e);
                         break;
                     }
                 }
             }
+            println!("Wallet update subscription ended");
         });
 
         Ok(Response::new(Box::pin(
@@ -216,5 +215,18 @@ impl WalletService for WalletServiceImpl {
                 error: Some(e.to_string()),
             })),
         }
+    }
+
+    async fn emit_wallet_update(
+        &self,
+        _request: Request<EmitWalletUpdateRequest>,
+    ) -> Result<Response<EmitWalletUpdateResponse>, Status> {
+        let wallet_manager = self.wallet_manager.lock().await;
+
+        wallet_manager.emit_wallet_update();
+        Ok(Response::new(EmitWalletUpdateResponse {
+            success: true,
+            error: None,
+        }))
     }
 }

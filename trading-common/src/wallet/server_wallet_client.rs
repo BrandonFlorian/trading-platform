@@ -10,7 +10,7 @@ pub use crate::proto::wallet::{
 };
 use crate::{
     models::{ConnectionStatus, ConnectionType},
-    ConnectionMonitor,
+    ConnectionMonitor, EmitWalletUpdateRequest, EmitWalletUpdateResponse,
 };
 
 #[derive(Clone)]
@@ -116,6 +116,15 @@ impl WalletClient {
                     .await;
                 Err(e.into())
             }
+        }
+    }
+
+    pub async fn emit_wallet_update(&self) -> Result<EmitWalletUpdateResponse> {
+        let mut client = self.client.lock().await;
+        let request = tonic::Request::new(EmitWalletUpdateRequest {});
+        match client.emit_wallet_update(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => Err(e.into()),
         }
     }
 }

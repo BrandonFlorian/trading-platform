@@ -9,7 +9,7 @@ use crate::{
     event_system::EventSystem,
     models::{CopyTradeSettings, TrackedWallet, TransactionLog, User},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use std::time::Instant;
 #[derive(Clone)]

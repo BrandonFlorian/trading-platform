@@ -1,12 +1,13 @@
 use crate::{
     error::AppError,
     event_system::{Event, EventSystem},
-    models::{ConnectionStatus, ConnectionType, TokenInfo, WalletUpdate},
-    wallet_client::WalletClient,
-    ConnectionMonitor, CopyTradeSettings, SupabaseClient, TrackedWallet, TransactionLog,
+    models::{ConnectionStatus, ConnectionType, WalletUpdateNotification},
+    server_wallet_client::WalletClient,
+    ConnectionMonitor,
 };
+
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::{
     net::SocketAddr,
@@ -24,11 +25,6 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 use uuid::Uuid;
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
-struct ConnectionContext {
-    supabase_client: Arc<SupabaseClient>,
-    event_system: Arc<EventSystem>,
-    wallet_client: Arc<WalletClient>,
-}
 
 #[derive(Debug)]
 struct ClientSession {
@@ -66,7 +62,6 @@ impl ClientSession {
 pub struct WebSocketServer {
     event_system: Arc<EventSystem>,
     wallet_client: Arc<WalletClient>,
-    supabase_client: Arc<SupabaseClient>,
     port: u16,
     connection_monitor: Arc<ConnectionMonitor>,
 }
@@ -75,14 +70,12 @@ impl WebSocketServer {
     pub fn new(
         event_system: Arc<EventSystem>,
         wallet_client: Arc<WalletClient>,
-        supabase_client: Arc<SupabaseClient>,
         port: u16,
         connection_monitor: Arc<ConnectionMonitor>,
     ) -> Self {
         Self {
             event_system,
             wallet_client,
-            supabase_client,
             port,
             connection_monitor,
         }
@@ -98,7 +91,6 @@ impl WebSocketServer {
 
             let event_system = Arc::clone(&self.event_system);
             let wallet_client = Arc::clone(&self.wallet_client);
-            let supabase_client = Arc::clone(&self.supabase_client);
             let connection_monitor = Arc::clone(&self.connection_monitor);
 
             tokio::spawn(async move {
@@ -117,7 +109,6 @@ impl WebSocketServer {
                             ws_stream,
                             event_system,
                             wallet_client,
-                            supabase_client,
                             connection_monitor.clone(),
                             addr,
                         )
@@ -154,18 +145,44 @@ impl WebSocketServer {
         ws_stream: WebSocketStream<TcpStream>,
         event_system: Arc<EventSystem>,
         wallet_client: Arc<WalletClient>,
-        supabase_client: Arc<SupabaseClient>,
         connection_monitor: Arc<ConnectionMonitor>,
         addr: SocketAddr,
     ) -> Result<(), AppError> {
         let (ws_sender, mut ws_receiver) = ws_stream.split();
+        println!("WebSocket subscribed to events for client {}", addr);
+
         let mut event_rx = event_system.subscribe();
 
-        let context = ConnectionContext {
-            supabase_client: Arc::clone(&supabase_client),
-            event_system: Arc::clone(&event_system),
-            wallet_client: Arc::clone(&wallet_client),
-        };
+        // Add this block here
+        let mut wallet_updates = wallet_client.subscribe_to_updates().await?;
+        let event_system_clone = event_system.clone();
+        tokio::spawn(async move {
+            while let Ok(Some(update)) = wallet_updates.message().await {
+                // Convert proto WalletUpdate to model WalletUpdate
+                let model_update = crate::models::WalletUpdate {
+                    balance: update.balance,
+                    tokens: update
+                        .tokens
+                        .into_iter()
+                        .map(|t| crate::models::TokenInfo {
+                            address: t.address,
+                            symbol: t.symbol,
+                            name: t.name,
+                            balance: t.balance,
+                            metadata_uri: t.metadata_uri,
+                            decimals: t.decimals as u8,
+                            market_cap: t.market_cap,
+                        })
+                        .collect(),
+                    address: update.address,
+                };
+
+                event_system_clone.emit(Event::WalletUpdate(WalletUpdateNotification {
+                    data: model_update,
+                    type_: "wallet_update".to_string(),
+                }));
+            }
+        });
 
         // Only start ping/pong after client is connected
         let mut ping_interval = interval(Duration::from_secs(60));
@@ -218,7 +235,7 @@ impl WebSocketServer {
                             break;
                         }
                         Ok(Message::Text(text)) => {
-                            if let Err(e) = Self::handle_command(&context, &text, &session).await {
+                            if let Err(e) = Self::handle_command(&text, &session).await {
                                 let error_msg = json!({
                                     "type": "error",
                                     "data": {
@@ -246,10 +263,13 @@ impl WebSocketServer {
                 }
 
                 Ok(event) = event_rx.recv() => {
+                    println!("WebSocket received raw event: {:?}", event); // Add this
+                    println!("WebSocket received event discriminant: {:?}", std::mem::discriminant(&event));
                     if let Err(e) = Self::send_event(&session, event).await {
                         eprintln!("Failed to send event: {}", e);
                         break;
                     }
+                    println!("Successfully sent event to client {}", addr);
                 }
             }
         }
@@ -258,6 +278,11 @@ impl WebSocketServer {
     }
 
     async fn send_event(session: &ClientSession, event: Event) -> Result<(), AppError> {
+        println!(
+            "WebSocket attempting to send event type: {:?}",
+            std::mem::discriminant(&event)
+        );
+
         let msg = match event {
             Event::TrackedWalletTransaction(notification) => {
                 json!({
@@ -272,10 +297,13 @@ impl WebSocketServer {
                 })
             }
             Event::WalletUpdate(notification) => {
-                json!({
+                println!("Converting WalletUpdate event to message");
+                let msg = json!({
                     "type": "wallet_update",
                     "data": notification.data
-                })
+                });
+                println!("WalletUpdate message: {}", msg);
+                msg
             }
             Event::TransactionLogged(notification) => {
                 json!({
@@ -301,147 +329,31 @@ impl WebSocketServer {
                     "data": notification.data
                 })
             }
-            // Handle other event types...
             _ => return Ok(()),
         };
-
+        println!("Sending event to client: {:?}", msg);
         session
             .send_message(Message::Text(msg.to_string().into()))
             .await?;
-
         Ok(())
     }
 
-    async fn get_initial_state(context: &ConnectionContext) -> Result<InitialState, anyhow::Error> {
-        // Get wallet info using gRPC client
-        let server_wallet_response = context
-            .wallet_client
-            .get_wallet_info()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get wallet info: {}", e))?;
-
-        // Convert WalletInfoResponse to WalletUpdate
-        let server_wallet = WalletUpdate {
-            balance: server_wallet_response.balance,
-            tokens: server_wallet_response
-                .tokens
-                .into_iter()
-                .map(|t| TokenInfo {
-                    address: t.address,
-                    symbol: t.symbol,
-                    name: t.name,
-                    balance: t.balance,
-                    metadata_uri: t.metadata_uri,
-                    decimals: t.decimals as u8,
-                    market_cap: t.market_cap,
-                })
-                .collect(),
-            address: server_wallet_response.address,
-        };
-
-        let tracked_wallets = context.supabase_client.get_tracked_wallets().await?;
-        let tracked_wallet = tracked_wallets.into_iter().find(|w| w.is_active);
-
-        let copy_trade_settings = if let Some(wallet) = &tracked_wallet {
-            context
-                .supabase_client
-                .get_copy_trade_settings()
-                .await?
-                .into_iter()
-                .find(|s| s.tracked_wallet_id == wallet.id.unwrap())
-        } else {
-            None
-        };
-
-        let recent_transactions = context
-            .supabase_client
-            .get_transaction_history()
-            .await?
-            .into_iter()
-            .take(50)
-            .collect();
-
-        Ok(InitialState {
-            server_wallet,
-            tracked_wallet,
-            copy_trade_settings,
-            recent_transactions,
-        })
-    }
-
-    async fn handle_command(
-        context: &ConnectionContext,
-        text: &str,
-        session: &ClientSession,
-    ) -> Result<(), anyhow::Error> {
+    async fn handle_command(text: &str, session: &ClientSession) -> Result<(), anyhow::Error> {
         let command: CommandMessage = serde_json::from_str(text)?;
 
         match command {
             CommandMessage::Start => {
-                let initial_state = Self::get_initial_state(context).await?;
-
                 session
                     .send_message(Message::Text(
                         serde_json::to_string(&json!({
                             "type": "start",
-                            "data": initial_state
-                        }))?
-                        .into(),
-                    ))
-                    .await?;
-            }
-            CommandMessage::UpdateSettings { settings } => {
-                context
-                    .supabase_client
-                    .update_copy_trade_settings(settings)
-                    .await?;
-
-                // Send confirmation
-                session
-                    .send_message(Message::Text(
-                        json!({
-                            "type": "update_settings",
-                            "data": { "success": true }
-                        })
-                        .to_string()
-                        .into(),
-                    ))
-                    .await?;
-            }
-            CommandMessage::RefreshState => {
-                // Handle refresh state...
-                let initial_state = Self::get_initial_state(context).await?;
-
-                session
-                    .send_message(Message::Text(
-                        serde_json::to_string(&json!({
-                            "type": "refresh_state",
-                            "data": initial_state
-                        }))?
-                        .into(),
-                    ))
-                    .await?;
-            }
-            CommandMessage::ManualSell {
-                token_address,
-                amount,
-                slippage,
-            } => {
-                // TODO: Implement manual sell using wallet_client
-                let initial_state = Self::get_initial_state(context).await?;
-
-                session
-                    .send_message(Message::Text(
-                        serde_json::to_string(&json!({
-                            "type": "manual_sell",
-                            "data": initial_state
+                            "data": "Websocket server starting up..."
                         }))?
                         .into(),
                     ))
                     .await?;
             }
         }
-
         Ok(())
     }
 }
@@ -457,22 +369,4 @@ impl Drop for WebSocketServer {
 enum CommandMessage {
     #[serde(rename = "start")]
     Start,
-    #[serde(rename = "update_settings")]
-    UpdateSettings { settings: CopyTradeSettings },
-    #[serde(rename = "refresh_state")]
-    RefreshState,
-    #[serde(rename = "manual_sell")]
-    ManualSell {
-        token_address: String,
-        amount: f64,
-        slippage: f64,
-    },
-}
-
-#[derive(Serialize)]
-struct InitialState {
-    server_wallet: WalletUpdate,
-    tracked_wallet: Option<TrackedWallet>,
-    copy_trade_settings: Option<CopyTradeSettings>,
-    recent_transactions: Vec<TransactionLog>,
 }

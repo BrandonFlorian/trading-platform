@@ -6,10 +6,12 @@ use crate::models::{
     ConnectionStatusNotification, CopyTradeNotification, DatabaseNotification,
     DatabaseOperationEvent, ErrorEvent, ErrorNotification, SettingsUpdateNotification,
     TrackedWalletNotification, TradeExecutionNotification, TransactionLoggedNotification,
-    WalletStateNotification, WalletUpdateNotification,
+    TransactionStateNotification, WalletStateNotification, WalletUpdateNotification,
 };
 
-#[derive(Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
     TrackedWalletTransaction(TrackedWalletNotification),
     CopyTradeExecution(CopyTradeNotification),
@@ -21,6 +23,7 @@ pub enum Event {
     WalletStateChange(WalletStateNotification),
     ConnectionStatus(ConnectionStatusNotification),
     TradeExecution(TradeExecutionNotification),
+    TransactionStateChange(TransactionStateNotification),
 }
 pub struct EventSystem {
     sender: broadcast::Sender<Event>,
@@ -28,17 +31,39 @@ pub struct EventSystem {
 
 impl EventSystem {
     pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(100);
+        let (sender, _) = broadcast::channel(200);
         Self { sender }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        println!("Subscribing to events");
-        self.sender.subscribe()
+        let rx = self.sender.subscribe();
+        println!(
+            "New subscriber added, total receivers: {}",
+            self.sender.receiver_count()
+        );
+        rx
     }
 
     pub fn emit(&self, event: Event) {
-        let _ = self.sender.send(event);
+        println!("EventSystem emitting event: {:?}", event);
+        let receiver_count = self.sender.receiver_count();
+        println!("Current receiver count: {}", receiver_count);
+
+        if receiver_count == 0 {
+            println!(
+                "WARNING: No receivers for event: {:?}",
+                std::mem::discriminant(&event)
+            );
+        }
+
+        match self.sender.send(event) {
+            Ok(n) => println!("Event sent to {} receivers", n),
+            Err(e) => println!("Failed to send event: {}", e),
+        }
+    }
+
+    pub fn receiver_count(&self) -> usize {
+        self.sender.receiver_count()
     }
 
     pub async fn handle_transaction_logged(&self, notification: TransactionLoggedNotification) {
@@ -74,6 +99,14 @@ impl EventSystem {
     pub async fn handle_error(&self, notification: ErrorNotification) {
         println!("Handling error");
         self.emit(Event::Error(notification));
+    }
+
+    pub async fn handle_transaction_state_change(
+        &self,
+        notification: TransactionStateNotification,
+    ) {
+        println!("Handling transaction state change");
+        self.emit(Event::TransactionStateChange(notification));
     }
 
     pub fn emit_db_event(

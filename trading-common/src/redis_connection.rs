@@ -21,7 +21,6 @@ const MAX_RETRIES: u32 = 5;
 
 #[derive(Clone)]
 pub struct RedisConnection {
-    _client: Client,
     connection: ConnectionManager,
     connection_monitor: Arc<ConnectionMonitor>,
 }
@@ -52,7 +51,6 @@ impl RedisConnection {
                     .await;
 
                 Ok(Self {
-                    _client: client,
                     connection,
                     connection_monitor,
                 })

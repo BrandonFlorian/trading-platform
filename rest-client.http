@@ -114,3 +114,15 @@ Content-Type: application/json
 
 ### Get wallet details
 GET {{baseUrl}}/wallet/{{walletAddress}}
+
+### Get wallet details
+GET {{baseUrl}}/wallet/{{walletAddress}}
+
+### Get token metadata
+GET {{baseUrl}}/token_metadata/{{pumpFunTokenAddress}}
+
+### Get token metadata
+GET {{baseUrl}}/token_metadata/{{raydiumTokenAddress}}
+
+### Trigger wallet update
+POST {{baseUrl}}/wallet/update

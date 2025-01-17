@@ -13,6 +13,9 @@ service WalletService {
     
     // Refresh wallet balances
     rpc RefreshBalances (RefreshBalancesRequest) returns (RefreshBalancesResponse);
+
+    // Emit wallet update
+    rpc EmitWalletUpdate (EmitWalletUpdateRequest) returns (EmitWalletUpdateResponse);
 }
 
 message WalletInfoRequest {}
@@ -61,6 +64,13 @@ message WalletUpdate {
 message RefreshBalancesRequest {}
 
 message RefreshBalancesResponse {
+    bool success = 1;
+    optional string error = 2;
+}
+
+message EmitWalletUpdateRequest {}
+
+message EmitWalletUpdateResponse {
     bool success = 1;
     optional string error = 2;
 }

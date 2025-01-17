@@ -9,7 +9,6 @@ use axum::{
 use chrono::Utc;
 use serde_json::{json, Value};
 use solana_sdk::{pubkey::Pubkey, signer::Signer};
-
 use trading_common::{
     data::{get_metadata, get_server_keypair},
     error::AppError,
@@ -284,21 +283,25 @@ pub async fn pump_fun_buy(
     let response = process_buy_request(&rpc_client, &server_keypair, request).await?;
 
     if response.success {
-        state
-            .wallet_client
-            .handle_trade_execution(TradeExecutionRequest {
-                signature: response.signature.clone(),
-                token_address: token_address.clone(),
-                transaction_type: "Buy".to_string(),
-                amount_token: response.token_quantity,
-                amount_sol: response.sol_spent,
-                price_per_token: response.sol_spent / response.token_quantity,
-                // Leave optional fields empty
-                token_name: String::new(),
-                token_symbol: String::new(),
-                token_image_uri: String::new(),
-            })
-            .await?;
+        let wallet_client = state.wallet_client.clone();
+        let trade_request = TradeExecutionRequest {
+            signature: response.signature.clone(),
+            token_address: token_address.clone(),
+            transaction_type: "Buy".to_string(),
+            amount_token: response.token_quantity,
+            amount_sol: response.sol_spent,
+            price_per_token: response.sol_spent / response.token_quantity,
+            // Leave optional fields empty
+            token_name: String::new(),
+            token_symbol: String::new(),
+            token_image_uri: String::new(),
+        };
+
+        tokio::spawn(async move {
+            if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
+                eprintln!("Error updating wallet state: {}", e);
+            }
+        });
 
         // Log successful manual trade
         let transaction_log = TransactionLog {
@@ -356,21 +359,25 @@ pub async fn pump_fun_sell(
     let response = process_sell_request(&rpc_client, &server_keypair, request).await?;
 
     if response.success {
-        state
-            .wallet_client
-            .handle_trade_execution(TradeExecutionRequest {
-                signature: response.signature.clone(),
-                token_address: token_address.clone(),
-                transaction_type: "Sell".to_string(),
-                amount_token: response.token_quantity,
-                amount_sol: response.sol_received,
-                price_per_token: response.sol_received / response.token_quantity,
-                // Leave optional fields empty
-                token_name: String::new(),
-                token_symbol: String::new(),
-                token_image_uri: String::new(),
-            })
-            .await?;
+        let wallet_client = state.wallet_client.clone();
+        let trade_request = TradeExecutionRequest {
+            signature: response.signature.clone(),
+            token_address: token_address.clone(),
+            transaction_type: "Sell".to_string(),
+            amount_token: response.token_quantity,
+            amount_sol: response.sol_received,
+            price_per_token: response.sol_received / response.token_quantity,
+            // Leave optional fields empty
+            token_name: String::new(),
+            token_symbol: String::new(),
+            token_image_uri: String::new(),
+        };
+
+        tokio::spawn(async move {
+            if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
+                eprintln!("Error updating wallet state: {}", e);
+            }
+        });
 
         // Log successful manual trade
         let transaction_log = TransactionLog {
@@ -427,21 +434,25 @@ pub async fn raydium_buy(
     let response = process_raydium_buy(&rpc_client, &server_keypair, &request).await?;
 
     if response.success {
-        state
-            .wallet_client
-            .handle_trade_execution(TradeExecutionRequest {
-                signature: response.signature.clone(),
-                token_address: token_address.clone(),
-                transaction_type: "Buy".to_string(),
-                amount_token: response.token_quantity,
-                amount_sol: response.sol_spent,
-                price_per_token: response.sol_spent / response.token_quantity,
-                // Leave optional fields empty
-                token_name: String::new(),
-                token_symbol: String::new(),
-                token_image_uri: String::new(),
-            })
-            .await?;
+        let wallet_client = state.wallet_client.clone();
+        let trade_request = TradeExecutionRequest {
+            signature: response.signature.clone(),
+            token_address: token_address.clone(),
+            transaction_type: "Buy".to_string(),
+            amount_token: response.token_quantity,
+            amount_sol: response.sol_spent,
+            price_per_token: response.sol_spent / response.token_quantity,
+            // Leave optional fields empty
+            token_name: String::new(),
+            token_symbol: String::new(),
+            token_image_uri: String::new(),
+        };
+
+        tokio::spawn(async move {
+            if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
+                eprintln!("Error updating wallet state: {}", e);
+            }
+        });
 
         // Log successful manual trade
         let transaction_log = TransactionLog {
@@ -497,21 +508,25 @@ pub async fn raydium_sell(
     let response = process_raydium_sell(&rpc_client, &server_keypair, &request).await?;
 
     if response.success {
-        state
-            .wallet_client
-            .handle_trade_execution(TradeExecutionRequest {
-                signature: response.signature.clone(),
-                token_address: token_address.clone(),
-                transaction_type: "Sell".to_string(),
-                amount_token: response.token_quantity,
-                amount_sol: response.sol_received,
-                price_per_token: response.sol_received / response.token_quantity,
-                // Leave optional fields empty
-                token_name: String::new(),
-                token_symbol: String::new(),
-                token_image_uri: String::new(),
-            })
-            .await?;
+        let wallet_client = state.wallet_client.clone();
+        let trade_request = TradeExecutionRequest {
+            signature: response.signature.clone(),
+            token_address: token_address.clone(),
+            transaction_type: "Sell".to_string(),
+            amount_token: response.token_quantity,
+            amount_sol: response.sol_received,
+            price_per_token: response.sol_received / response.token_quantity,
+            // Leave optional fields empty
+            token_name: String::new(),
+            token_symbol: String::new(),
+            token_image_uri: String::new(),
+        };
+
+        tokio::spawn(async move {
+            if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
+                eprintln!("Error updating wallet state: {}", e);
+            }
+        });
 
         // Log successful manual trade
         let transaction_log = TransactionLog {
@@ -626,4 +641,37 @@ pub async fn get_wallet_details(
         "sol_balance": sol_balance as f64 / 1e9, // Convert lamports to SOL
         "tokens": tokens,
     })))
+}
+
+pub async fn get_token_metadata(
+    State(state): State<AppState>,
+    Path(token_address): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    // Validate token address first
+    let token_pubkey = Pubkey::from_str(&token_address)
+        .map_err(|_| AppError::BadRequest("Invalid token address".to_string()))?;
+
+    let rpc_client = state.rpc_client.load();
+
+    let metadata = get_metadata(&rpc_client, &token_pubkey)
+        .await
+        .map_err(|e| AppError::ServerError(format!("Failed to fetch token metadata: {}", e)))?;
+
+    let response = json!({
+        "address": token_address,
+        "name": metadata.name,
+        "symbol": metadata.symbol,
+        "uri": metadata.uri,
+        "update_authority": metadata.update_authority,
+    });
+
+    Ok(Json(response))
+}
+
+pub async fn trigger_wallet_update(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let response = state.wallet_client.emit_wallet_update().await?;
+    println!("Wallet update response: {:?}", response);
+    Ok(Json(json!({ "success": true })))
 }

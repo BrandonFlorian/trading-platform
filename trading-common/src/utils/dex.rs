@@ -14,6 +14,16 @@ pub enum DexType {
     Unknown,
 }
 
+impl std::fmt::Display for DexType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DexType::PumpFun => write!(f, "pump_fun"),
+            DexType::Raydium => write!(f, "raydium"),
+            DexType::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct DexTransaction {
     pub dex_type: DexType,

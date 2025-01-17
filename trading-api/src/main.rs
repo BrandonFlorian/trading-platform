@@ -12,11 +12,11 @@ use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
+use trading_common::ConnectionMonitor;
 use trading_common::{
     data::get_server_keypair, event_system::EventSystem, redis_connection::RedisConnection,
-    SupabaseClient,
+    server_wallet_client::WalletClient, SupabaseClient,
 };
-use trading_common::{wallet_client::WalletClient, ConnectionMonitor};
 
 mod routes;
 
@@ -78,8 +78,10 @@ async fn main() -> Result<()> {
     let rpc_client = RpcClient::new(rpc_url);
     let shared_rpc_client = Arc::new(ArcSwap::from_pointee(rpc_client));
 
+    println!("redis_url: {}", redis_url);
     // Create redis connection
     let redis_connection = RedisConnection::new(&redis_url, connection_monitor.clone()).await?;
+    println!("redis_connection created");
 
     let state = AppState {
         rpc_client: shared_rpc_client,
@@ -146,6 +148,11 @@ async fn main() -> Result<()> {
         .route("/raydium/buy", post(routes::raydium_buy))
         .route("/raydium/sell", post(routes::raydium_sell))
         .route("/wallet/{wallet_address}", get(routes::get_wallet_details))
+        .route(
+            "/token_metadata/{token_address}",
+            get(routes::get_token_metadata),
+        )
+        .route("/wallet/update", post(routes::trigger_wallet_update))
         .with_state(state)
         .layer(cors);
     let port = env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());
