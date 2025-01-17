@@ -112,6 +112,12 @@ Content-Type: application/json
     "slippage_tolerance": 0.2
 }
 
+### Get wallet details
+GET {{baseUrl}}/wallet/{{walletAddress}}
+
+### Get wallet details
+GET {{baseUrl}}/wallet/{{walletAddress}}
+
 ### Get token metadata
 GET {{baseUrl}}/token_metadata/{{pumpFunTokenAddress}}
 

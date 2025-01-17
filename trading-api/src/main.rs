@@ -147,6 +147,7 @@ async fn main() -> Result<()> {
         .route("/pump_fun/sell", post(routes::pump_fun_sell))
         .route("/raydium/buy", post(routes::raydium_buy))
         .route("/raydium/sell", post(routes::raydium_sell))
+        .route("/wallet/{wallet_address}", get(routes::get_wallet_details))
         .route(
             "/token_metadata/{token_address}",
             get(routes::get_token_metadata),

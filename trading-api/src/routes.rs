@@ -26,7 +26,6 @@ use trading_common::{
     CopyTradeSettings, TrackedWallet, TradeExecutionRequest, TransactionLog,
 };
 use uuid::Uuid;
-
 pub async fn get_wallet_info(State(state): State<AppState>) -> Result<Response, AppError> {
     let response = state
         .wallet_client
@@ -569,6 +568,79 @@ pub async fn raydium_sell(
     }
 
     Ok(Json(response))
+}
+
+pub async fn get_wallet_details(
+    State(state): State<AppState>,
+    Path(wallet_address): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    // Validate wallet address
+    let wallet_pubkey = Pubkey::from_str(&wallet_address)
+        .map_err(|_| AppError::BadRequest("Invalid wallet address".to_string()))?;
+
+    let rpc_client = state.rpc_client.load();
+
+    // Get SOL balance
+    let sol_balance = rpc_client
+        .get_balance(&wallet_pubkey)
+        .map_err(|e| AppError::SolanaRpcError { source: e })?;
+
+    // Get all token accounts
+    let token_accounts = rpc_client
+        .get_token_accounts_by_owner(
+            &wallet_pubkey,
+            solana_client::rpc_request::TokenAccountsFilter::ProgramId(spl_token::id()),
+        )
+        .map_err(|e| AppError::SolanaRpcError { source: e })?;
+
+    // Process token accounts
+    let mut tokens = Vec::new();
+    for account in token_accounts {
+        if let Some((mint, raw_balance, decimals)) =
+            trading_common::data::extract_token_account_info(&account.account.data)
+        {
+            if raw_balance > 0 {
+                let mint_pubkey = Pubkey::from_str(&mint)
+                    .map_err(|_| AppError::BadRequest("Invalid mint address".to_string()))?;
+
+                // Get token metadata
+                match get_metadata(&rpc_client, &mint_pubkey).await {
+                    Ok(metadata) => {
+                        let balance =
+                            trading_common::data::format_token_amount(raw_balance, decimals);
+                        let formatted_balance =
+                            trading_common::data::format_balance(balance, decimals);
+
+                        tokens.push(json!({
+                            "mint": mint,
+                            "balance": formatted_balance,
+                            "decimals": decimals,
+                            "name": metadata.name,
+                            "symbol": metadata.symbol,
+                            "uri": metadata.uri,
+                            "raw_balance": raw_balance,
+                        }));
+                    }
+                    Err(e) => {
+                        println!("Failed to get metadata for token {}: {}", mint, e);
+                        // Include token even without metadata
+                        tokens.push(json!({
+                            "mint": mint,
+                            "balance": raw_balance,
+                            "decimals": decimals,
+                            "raw_balance": raw_balance,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "address": wallet_address,
+        "sol_balance": sol_balance as f64 / 1e9, // Convert lamports to SOL
+        "tokens": tokens,
+    })))
 }
 
 pub async fn get_token_metadata(
