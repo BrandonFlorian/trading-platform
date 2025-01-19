@@ -43,8 +43,9 @@ bytemuck = { version = "1.21.0", features = ["derive"] }
 scopeguard = "1.2.0"
 backoff = "0.4.0"
 tokio-native-tls = "0.3.1"
-reqwest = "0.12.12"
+reqwest = { version = "0.12.12", features = ["json"] }
 redis = { version = "0.28.0", features = ["tokio-comp", "connection-manager", "aio"] }
 tonic = { version = "0.12.3", features = ["transport"] }
 prost = "0.13.4"
 tower-http = { version = "0.6.2", features = ["cors"] }
+bincode = "1.3.3"

@@ -6,9 +6,9 @@ use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTra
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 
-use crate::pumpdotfun;
 use crate::raydium;
 use crate::{data::get_metadata, ClientTxInfo, TransactionType};
+use crate::{jupiter, pumpdotfun};
 
 use super::dex::{DexTransaction, DexType};
 
@@ -103,6 +103,7 @@ pub async fn create_client_tx_info(
         match dex_type {
             DexType::PumpFun => crate::pumpdotfun::extract_transaction_details(transaction_data)?,
             DexType::Raydium => crate::raydium::extract_transaction_details(transaction_data)?,
+            DexType::Jupiter => crate::jupiter::extract_transaction_details(transaction_data)?,
             DexType::Unknown => return Ok(None),
         };
 
@@ -121,6 +122,9 @@ pub async fn create_client_tx_info(
         }
         DexType::Raydium => {
             raydium::transaction::extract_accounts(transaction_data, &transaction_type)?
+        }
+        DexType::Jupiter => {
+            jupiter::transaction::extract_accounts(transaction_data, &transaction_type)?
         }
         DexType::Unknown => (String::new(), String::new()),
     };

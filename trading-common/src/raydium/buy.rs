@@ -3,10 +3,10 @@ use super::types::PoolKeys;
 use crate::{
     data::confirm_transaction,
     error::AppError,
-    extract_transaction_details,
     models::{BuyRequest, BuyResponse},
     raydium::{
         constants::{COMPUTE_BUDGET_PRICE, COMPUTE_BUDGET_UNITS, LAMPORTS_PER_SOL},
+        transaction::extract_transaction_details,
         utils::{
             create_swap_instruction, create_wsol_account_instructions, get_pool_info, get_pool_keys,
         },

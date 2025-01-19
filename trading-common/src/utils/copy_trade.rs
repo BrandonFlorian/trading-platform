@@ -9,8 +9,8 @@ use crate::dex::DexType;
 use crate::models::SellRequest;
 use crate::server_wallet_client::WalletClient;
 use crate::utils::data::get_token_balance;
+use crate::{jupiter, pumpdotfun, WalletInfoResponse};
 use crate::{models::BuyRequest, ClientTxInfo, CopyTradeSettings, TransactionType};
-use crate::{pumpdotfun, WalletInfoResponse};
 use crate::{raydium, TradeExecutionRequest};
 
 pub async fn should_copy_trade(
@@ -83,6 +83,9 @@ pub async fn execute_copy_trade(
                 }
                 DexType::Raydium => {
                     raydium::process_buy_request(rpc_client, server_keypair, &request).await?
+                }
+                DexType::Jupiter => {
+                    jupiter::process_buy_request(rpc_client, server_keypair, &request).await?
                 }
                 DexType::Unknown => {
                     return Err(anyhow::anyhow!("Unknown DEX type"));
@@ -165,6 +168,9 @@ pub async fn execute_copy_trade(
                     }
                     DexType::Raydium => {
                         raydium::process_sell_request(rpc_client, server_keypair, &request).await?
+                    }
+                    DexType::Jupiter => {
+                        jupiter::process_sell_request(rpc_client, server_keypair, &request).await?
                     }
                     DexType::Unknown => {
                         return Err(anyhow::anyhow!("Unknown DEX type"));

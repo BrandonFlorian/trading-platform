@@ -1,6 +1,7 @@
 pub mod constants;
 pub mod database;
 pub mod error;
+pub mod jupiter;
 pub mod models;
 pub mod pumpdotfun;
 pub mod raydium;
@@ -34,6 +35,7 @@ pub use models::{ClientTxInfo, CopyTradeSettings, TrackedWallet, TransactionLog,
 pub use proto::*;
 
 pub use connection_monitor::*;
+pub use jupiter::*;
 pub use pumpdotfun::{buy, process_buy_request, process_sell_request, sell, types};
 pub use raydium::*;
 pub use redis_connection::*;

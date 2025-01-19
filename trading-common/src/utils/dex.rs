@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
 
 use crate::{
+    jupiter,
     pumpdotfun::{self},
     raydium, TransactionType,
 };
@@ -11,6 +12,7 @@ use crate::{
 pub enum DexType {
     PumpFun,
     Raydium,
+    Jupiter,
     Unknown,
 }
 
@@ -19,6 +21,7 @@ impl std::fmt::Display for DexType {
         match self {
             DexType::PumpFun => write!(f, "pump_fun"),
             DexType::Raydium => write!(f, "raydium"),
+            DexType::Jupiter => write!(f, "jupiter"),
             DexType::Unknown => write!(f, "unknown"),
         }
     }
@@ -41,6 +44,15 @@ impl DexTransaction {
             let logs = meta.log_messages.as_ref().unwrap_or(&empty_logs);
 
             println!("Checking DEX type...");
+
+            // Check for Jupiter signatures first as it might route through other DEXs
+            let is_jupiter = logs
+                .iter()
+                .any(|log| log.contains(jupiter::transaction::JUPITER_PROGRAM_ID));
+            if is_jupiter {
+                println!("Detected Jupiter transaction");
+                return DexType::Jupiter;
+            }
 
             // Check for Pump.fun signatures
             let is_pump_fun = logs
@@ -80,6 +92,9 @@ impl DexTransaction {
                         }
                         DexType::Raydium => {
                             raydium::transaction::extract_transaction_details(transaction)?
+                        }
+                        DexType::Jupiter => {
+                            jupiter::transaction::extract_transaction_details(transaction)?
                         }
                         DexType::Unknown => unreachable!(),
                     };
