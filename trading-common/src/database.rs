@@ -7,7 +7,10 @@ use uuid::Uuid;
 use crate::{
     error::AppError,
     event_system::EventSystem,
-    models::{CopyTradeSettings, TrackedWallet, TransactionLog, User},
+    models::{
+        CopyTradeSettings, TrackedWallet, TransactionLog, User, Watchlist, WatchlistToken,
+        WatchlistWithTokens,
+    },
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -807,6 +810,178 @@ impl SupabaseClient {
         operation_result
     }
 
+    pub async fn get_watchlists(&self) -> Result<Vec<WatchlistWithTokens>, AppError> {
+        let resp = self
+            .client
+            .from("watchlists")
+            .select("*")
+            .eq("user_id", &self.user_id)
+            .execute()
+            .await
+            .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+        let watchlists: Vec<Watchlist> = serde_json::from_str(&body)
+            .map_err(|e| AppError::JsonParseError(format!("Failed to parse watchlists: {}", e)))?;
+
+        let mut result = Vec::new();
+        for watchlist in watchlists {
+            let watchlist_id = watchlist
+                .id
+                .ok_or_else(|| AppError::DatabaseError("Watchlist ID not found".to_string()))?;
+
+            let resp = self
+                .client
+                .from("watchlist_tokens")
+                .select("*")
+                .eq("watchlist_id", watchlist_id.to_string())
+                .execute()
+                .await
+                .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+            let tokens: Vec<WatchlistToken> = serde_json::from_str(&body)
+                .map_err(|e| AppError::JsonParseError(format!("Failed to parse tokens: {}", e)))?;
+
+            result.push(WatchlistWithTokens {
+                id: watchlist_id,
+                name: watchlist.name,
+                description: watchlist.description,
+                tokens: tokens.into_iter().map(|t| t.token_address).collect(),
+                created_at: watchlist.created_at.ok_or_else(|| {
+                    AppError::DatabaseError("Created at timestamp not found".to_string())
+                })?,
+                updated_at: watchlist.updated_at.ok_or_else(|| {
+                    AppError::DatabaseError("Updated at timestamp not found".to_string())
+                })?,
+            });
+        }
+
+        Ok(result)
+    }
+
+    pub async fn get_watchlist(&self, watchlist_id: Uuid) -> Result<WatchlistWithTokens, AppError> {
+        let resp = self
+            .client
+            .from("watchlists")
+            .select("*")
+            .eq("user_id", &self.user_id)
+            .eq("id", watchlist_id.to_string())
+            .execute()
+            .await
+            .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+        let watchlists: Vec<Watchlist> = serde_json::from_str(&body)
+            .map_err(|e| AppError::JsonParseError(format!("Failed to parse watchlist: {}", e)))?;
+
+        let watchlist = watchlists
+            .first()
+            .ok_or_else(|| AppError::DatabaseError("Watchlist not found".to_string()))?
+            .clone();
+
+        // Get tokens for this watchlist
+        let resp = self
+            .client
+            .from("watchlist_tokens")
+            .select("*")
+            .eq("watchlist_id", watchlist_id.to_string())
+            .execute()
+            .await
+            .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+        let tokens: Vec<WatchlistToken> = serde_json::from_str(&body)
+            .map_err(|e| AppError::JsonParseError(format!("Failed to parse tokens: {}", e)))?;
+
+        Ok(WatchlistWithTokens {
+            id: watchlist.id.unwrap(),
+            name: watchlist.name,
+            description: watchlist.description,
+            tokens: tokens.into_iter().map(|t| t.token_address).collect(),
+            created_at: watchlist.created_at.unwrap(),
+            updated_at: watchlist.updated_at.unwrap(),
+        })
+    }
+
+    pub async fn create_watchlist(&self, mut watchlist: Watchlist) -> Result<Uuid, AppError> {
+        let start_time = Instant::now();
+
+        let operation_result = async {
+            watchlist.user_id = Some(self.user_id.clone());
+
+            let resp = self
+                .client
+                .from("watchlists")
+                .insert(
+                    json!({
+                        "user_id": watchlist.user_id,
+                        "name": watchlist.name,
+                        "description": watchlist.description
+                    })
+                    .to_string(),
+                )
+                .execute()
+                .await
+                .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+            let inserted: Vec<Watchlist> = serde_json::from_str(&body).map_err(|e| {
+                AppError::JsonParseError(format!("Failed to parse response: {}", e))
+            })?;
+
+            inserted
+                .first()
+                .and_then(|w| w.id)
+                .ok_or_else(|| AppError::DatabaseError("Failed to create watchlist".to_string()))
+        }
+        .await;
+
+        // Emit database operation event
+        self.event_system.emit_db_event(
+            "insert",
+            "watchlists",
+            start_time,
+            operation_result.as_ref().err().map(|e| e.to_string()),
+        );
+
+        if let Err(ref e) = operation_result {
+            self.event_system.emit_error(
+                "database_error",
+                &e.to_string(),
+                json!({
+                    "operation": "insert",
+                    "table": "watchlists",
+                    "user_id": self.user_id,
+                    "watchlist_name": watchlist.name,
+                    "created_at": Utc::now()
+                }),
+            );
+        }
+
+        operation_result
+    }
+
     // Helper function to verify table schema matches our struct
     pub async fn verify_copy_trade_settings_schema(&self) -> Result<(), AppError> {
         let resp = self
@@ -826,5 +1001,260 @@ impl SupabaseClient {
         println!("Copy trade settings schema: {}", schema);
 
         Ok(())
+    }
+
+    pub async fn update_watchlist(&self, watchlist: Watchlist) -> Result<Uuid, AppError> {
+        let start_time = Instant::now();
+
+        let operation_result = async {
+            let watchlist_id = watchlist.id.ok_or_else(|| {
+                AppError::BadRequest("Watchlist ID is required for update".to_string())
+            })?;
+
+            let resp = self
+                .client
+                .from("watchlists")
+                .update(
+                    json!({
+                        "name": watchlist.name,
+                        "description": watchlist.description,
+                    })
+                    .to_string(),
+                )
+                .eq("user_id", &self.user_id)
+                .eq("id", watchlist_id.to_string())
+                .execute()
+                .await
+                .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+            let updated: Vec<Watchlist> = serde_json::from_str(&body).map_err(|e| {
+                AppError::JsonParseError(format!("Failed to parse response: {}", e))
+            })?;
+
+            updated
+                .first()
+                .and_then(|w| w.id)
+                .ok_or_else(|| AppError::DatabaseError("Failed to update watchlist".to_string()))
+        }
+        .await;
+
+        self.event_system.emit_db_event(
+            "update",
+            "watchlists",
+            start_time,
+            operation_result.as_ref().err().map(|e| e.to_string()),
+        );
+
+        if let Err(ref e) = operation_result {
+            self.event_system.emit_error(
+                "database_error",
+                &e.to_string(),
+                json!({
+                    "operation": "update",
+                    "table": "watchlists",
+                    "user_id": self.user_id,
+                    "watchlist_id": watchlist.id,
+                    "updated_at": Utc::now()
+                }),
+            );
+        }
+
+        operation_result
+    }
+
+    pub async fn delete_watchlist(&self, watchlist_id: Uuid) -> Result<String, AppError> {
+        let start_time = Instant::now();
+
+        let operation_result = async {
+            let resp = self
+                .client
+                .from("watchlists")
+                .delete()
+                .eq("user_id", &self.user_id)
+                .eq("id", watchlist_id.to_string())
+                .execute()
+                .await
+                .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+            if resp.status().is_success() {
+                let body = resp
+                    .text()
+                    .await
+                    .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+                let deleted_items: Vec<serde_json::Value> = serde_json::from_str(&body)
+                    .map_err(|e| AppError::JsonParseError(e.to_string()))?;
+
+                if deleted_items.is_empty() {
+                    Err(AppError::DatabaseError(
+                        "No watchlist found to delete".to_string(),
+                    ))
+                } else {
+                    Ok(format!(
+                        "{} watchlist(s) deleted successfully",
+                        deleted_items.len()
+                    ))
+                }
+            } else {
+                Err(AppError::DatabaseError(format!(
+                    "Failed to delete watchlist. Status: {}",
+                    resp.status()
+                )))
+            }
+        }
+        .await;
+
+        self.event_system.emit_db_event(
+            "delete",
+            "watchlists",
+            start_time,
+            operation_result.as_ref().err().map(|e| e.to_string()),
+        );
+
+        if let Err(ref e) = operation_result {
+            self.event_system.emit_error(
+                "database_error",
+                &e.to_string(),
+                json!({
+                    "operation": "delete",
+                    "table": "watchlists",
+                    "user_id": self.user_id,
+                    "watchlist_id": watchlist_id
+                }),
+            );
+        }
+
+        operation_result
+    }
+
+    pub async fn add_token_to_watchlist(&self, token: WatchlistToken) -> Result<Uuid, AppError> {
+        let start_time = Instant::now();
+
+        let operation_result = async {
+            let resp = self
+                .client
+                .from("watchlist_tokens")
+                .insert(
+                    json!({
+                        "watchlist_id": token.watchlist_id,
+                        "token_address": token.token_address,
+                    })
+                    .to_string(),
+                )
+                .execute()
+                .await
+                .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+            let inserted: Vec<WatchlistToken> = serde_json::from_str(&body).map_err(|e| {
+                AppError::JsonParseError(format!("Failed to parse response: {}", e))
+            })?;
+
+            inserted.first().and_then(|t| t.id).ok_or_else(|| {
+                AppError::DatabaseError("Failed to add token to watchlist".to_string())
+            })
+        }
+        .await;
+
+        self.event_system.emit_db_event(
+            "insert",
+            "watchlist_tokens",
+            start_time,
+            operation_result.as_ref().err().map(|e| e.to_string()),
+        );
+
+        if let Err(ref e) = operation_result {
+            self.event_system.emit_error(
+                "database_error",
+                &e.to_string(),
+                json!({
+                    "operation": "insert",
+                    "table": "watchlist_tokens",
+                    "watchlist_id": token.watchlist_id,
+                    "token_address": token.token_address,
+                    "created_at": Utc::now()
+                }),
+            );
+        }
+
+        operation_result
+    }
+
+    pub async fn remove_token_from_watchlist(
+        &self,
+        watchlist_id: Uuid,
+        token_address: &str,
+    ) -> Result<String, AppError> {
+        let start_time = Instant::now();
+
+        let operation_result = async {
+            let resp = self
+                .client
+                .from("watchlist_tokens")
+                .delete()
+                .eq("watchlist_id", watchlist_id.to_string())
+                .eq("token_address", token_address)
+                .execute()
+                .await
+                .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+            if resp.status().is_success() {
+                let body = resp
+                    .text()
+                    .await
+                    .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+                let deleted_items: Vec<serde_json::Value> = serde_json::from_str(&body)
+                    .map_err(|e| AppError::JsonParseError(e.to_string()))?;
+
+                if deleted_items.is_empty() {
+                    Err(AppError::DatabaseError(
+                        "No token found in watchlist to delete".to_string(),
+                    ))
+                } else {
+                    Ok(format!(
+                        "{} token(s) removed from watchlist successfully",
+                        deleted_items.len()
+                    ))
+                }
+            } else {
+                Err(AppError::DatabaseError(format!(
+                    "Failed to remove token from watchlist. Status: {}",
+                    resp.status()
+                )))
+            }
+        }
+        .await;
+
+        self.event_system.emit_db_event(
+            "delete",
+            "watchlist_tokens",
+            start_time,
+            operation_result.as_ref().err().map(|e| e.to_string()),
+        );
+
+        if let Err(ref e) = operation_result {
+            self.event_system.emit_error(
+                "database_error",
+                &e.to_string(),
+                json!({
+                    "operation": "delete",
+                    "table": "watchlist_tokens",
+                    "watchlist_id": watchlist_id,
+                    "token_address": token_address
+                }),
+            );
+        }
+
+        operation_result
     }
 }

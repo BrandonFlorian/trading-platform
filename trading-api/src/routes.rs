@@ -16,7 +16,7 @@ use trading_common::{
     models::{
         BuyRequest, BuyResponse, SellRequest, SellResponse, SettingsUpdateNotification,
         TradeExecution, TradeExecutionNotification, WalletStateChange, WalletStateChangeType,
-        WalletStateNotification,
+        WalletStateNotification, Watchlist, WatchlistToken, WatchlistWithTokens,
     },
     pumpdotfun::{buy::process_buy_request, sell::process_sell_request},
     raydium::{
@@ -674,4 +674,65 @@ pub async fn trigger_wallet_update(
     let response = state.wallet_client.emit_wallet_update().await?;
     println!("Wallet update response: {:?}", response);
     Ok(Json(json!({ "success": true })))
+}
+
+pub async fn get_watchlists(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<WatchlistWithTokens>>, AppError> {
+    let watchlists = state.supabase_client.get_watchlists().await?;
+    Ok(Json(watchlists))
+}
+
+pub async fn get_watchlist(
+    State(state): State<AppState>,
+    Path(watchlist_id): Path<Uuid>,
+) -> Result<Json<WatchlistWithTokens>, AppError> {
+    let watchlist = state.supabase_client.get_watchlist(watchlist_id).await?;
+    Ok(Json(watchlist))
+}
+
+pub async fn create_watchlist(
+    State(state): State<AppState>,
+    Json(watchlist): Json<Watchlist>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = state.supabase_client.create_watchlist(watchlist).await?;
+    Ok(Json(json!({ "success": true, "watchlist_id": result })))
+}
+
+pub async fn update_watchlist(
+    State(state): State<AppState>,
+    Json(watchlist): Json<Watchlist>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = state.supabase_client.update_watchlist(watchlist).await?;
+    Ok(Json(json!({ "success": true, "watchlist_id": result })))
+}
+
+pub async fn delete_watchlist(
+    State(state): State<AppState>,
+    Path(watchlist_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = state.supabase_client.delete_watchlist(watchlist_id).await?;
+    Ok(Json(json!({ "success": true, "message": result })))
+}
+
+pub async fn add_token_to_watchlist(
+    State(state): State<AppState>,
+    Json(token): Json<WatchlistToken>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Validate token address
+    trading_common::data::validate_token_address(&token.token_address)?;
+
+    let result = state.supabase_client.add_token_to_watchlist(token).await?;
+    Ok(Json(json!({ "success": true, "token_id": result })))
+}
+
+pub async fn remove_token_from_watchlist(
+    State(state): State<AppState>,
+    Path((watchlist_id, token_address)): Path<(Uuid, String)>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = state
+        .supabase_client
+        .remove_token_from_watchlist(watchlist_id, &token_address)
+        .await?;
+    Ok(Json(json!({ "success": true, "message": result })))
 }
