@@ -8,7 +8,7 @@ use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
 };
-use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
+use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiMessage};
 
 pub fn extract_transaction_details(
     transaction: &EncodedConfirmedTransactionWithStatusMeta,
@@ -23,6 +23,9 @@ pub fn extract_transaction_details(
     let logs = meta.log_messages.as_ref().unwrap_or(&empty_logs);
 
     println!("Analyzing Jupiter transaction logs...");
+    for log in logs {
+        println!("Log: {}", log);
+    }
 
     // Check if this is a Jupiter transaction
     if !logs.iter().any(|log| log.contains(JUPITER_PROGRAM_ID)) {
@@ -39,47 +42,160 @@ pub fn extract_transaction_details(
         .as_ref()
         .unwrap_or(&empty_token_balances);
 
-    // Find the non-WSOL token
-    let token_balance = pre_balances
+    println!("Pre balances: {:?}", pre_balances);
+    println!("Post balances: {:?}", post_balances);
+    println!(
+        "Pre SOL balance: {}",
+        meta.pre_balances.first().copied().unwrap_or(0) as f64 / 1e9
+    );
+    println!(
+        "Post SOL balance: {}",
+        meta.post_balances.first().copied().unwrap_or(0) as f64 / 1e9
+    );
+
+    // Find the token with significant balance change for the tracked wallet
+    let tracked_wallet_pubkey = match &transaction.transaction.transaction {
+        solana_transaction_status::EncodedTransaction::Json(tx) => match &tx.message {
+            UiMessage::Parsed(msg) => msg
+                .account_keys
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No account keys found"))?
+                .pubkey
+                .clone(),
+            UiMessage::Raw(msg) => msg
+                .account_keys
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No account keys found"))?
+                .clone(),
+        },
+        _ => return Err(anyhow::anyhow!("Unsupported transaction format")),
+    };
+
+    // Find token balances for the tracked wallet
+    let tracked_pre_balances: Vec<_> = pre_balances
         .iter()
-        .find(|balance| balance.mint != WSOL)
-        .ok_or_else(|| anyhow::anyhow!("Could not find token balance"))?;
+        .filter(|b| {
+            b.owner
+                .as_ref()
+                .map_or(false, |owner| owner == &tracked_wallet_pubkey)
+        })
+        .collect();
+
+    let tracked_post_balances: Vec<_> = post_balances
+        .iter()
+        .filter(|b| {
+            b.owner
+                .as_ref()
+                .map_or(false, |owner| owner == &tracked_wallet_pubkey)
+        })
+        .collect();
+
+    println!("Tracked wallet pre balances: {:?}", tracked_pre_balances);
+    println!("Tracked wallet post balances: {:?}", tracked_post_balances);
+
+    // Find the token with the largest change
+    let mut max_change = 0.0;
+    let mut target_token = None;
+
+    for balance in tracked_pre_balances
+        .iter()
+        .chain(tracked_post_balances.iter())
+    {
+        if balance.mint == WSOL {
+            continue;
+        }
+
+        let pre_amount: f64 = tracked_pre_balances
+            .iter()
+            .filter(|b| b.mint == balance.mint)
+            .filter_map(|b| b.ui_token_amount.ui_amount)
+            .sum();
+
+        let post_amount: f64 = tracked_post_balances
+            .iter()
+            .filter(|b| b.mint == balance.mint)
+            .filter_map(|b| b.ui_token_amount.ui_amount)
+            .sum();
+
+        let change = (post_amount - pre_amount).abs();
+        println!("Token {} change: {}", balance.mint, change);
+
+        if change > max_change {
+            max_change = change;
+            target_token = Some(balance);
+        }
+    }
+
+    let token_balance = target_token
+        .ok_or_else(|| anyhow::anyhow!("Could not find token with significant balance change"))?;
 
     let token_address = token_balance.mint.clone();
+    println!(
+        "Found token with largest balance change: {} (change: {})",
+        token_address, max_change
+    );
 
-    // Calculate token amount change
-    let pre_amount = pre_balances
+    // Calculate token amount change for the tracked wallet
+    let pre_amount: f64 = tracked_pre_balances
         .iter()
-        .find(|b| b.mint == token_address)
-        .and_then(|b| b.ui_token_amount.ui_amount)
-        .unwrap_or(0.0);
+        .filter(|b| b.mint == token_address)
+        .filter_map(|b| b.ui_token_amount.ui_amount)
+        .sum();
 
-    let post_amount = post_balances
+    let post_amount: f64 = tracked_post_balances
         .iter()
-        .find(|b| b.mint == token_address)
-        .and_then(|b| b.ui_token_amount.ui_amount)
-        .unwrap_or(0.0);
+        .filter(|b| b.mint == token_address)
+        .filter_map(|b| b.ui_token_amount.ui_amount)
+        .sum();
 
     let token_amount_change = post_amount - pre_amount;
+    println!("Pre amount for token {}: {}", token_address, pre_amount);
+    println!("Post amount for token {}: {}", token_address, post_amount);
     println!("Token amount change: {}", token_amount_change);
 
-    // Determine transaction type based on the actual operation
-    // Jupiter uses SharedAccountsRoute for both buy and sell
+    // Calculate SOL amount change (including wrapped SOL)
+    let pre_sol = pre_balances
+        .iter()
+        .find(|b| b.mint == WSOL)
+        .and_then(|b| b.ui_token_amount.ui_amount)
+        .unwrap_or(0.0)
+        + (meta.pre_balances.first().copied().unwrap_or(0) as f64 / 1e9);
+
+    let post_sol = post_balances
+        .iter()
+        .find(|b| b.mint == WSOL)
+        .and_then(|b| b.ui_token_amount.ui_amount)
+        .unwrap_or(0.0)
+        + (meta.post_balances.first().copied().unwrap_or(0) as f64 / 1e9);
+
+    let amount_sol = (post_sol - pre_sol).abs();
+
+    // Determine transaction type based on token amount change
     let transaction_type = if token_amount_change > 0.0 {
-        println!("Detected Jupiter BUY (token balance increased)");
+        println!(
+            "Detected Jupiter BUY (token balance increased by {})",
+            token_amount_change
+        );
         TransactionType::Buy
-    } else {
-        println!("Detected Jupiter SELL (token balance decreased)");
+    } else if token_amount_change < 0.0 {
+        println!(
+            "Detected Jupiter SELL (token balance decreased by {})",
+            token_amount_change.abs()
+        );
         TransactionType::Sell
+    } else {
+        // If there's no change, look at the direction of SOL movement
+        let sol_change = (post_sol - pre_sol) as f64;
+        if sol_change < 0.0 {
+            println!("Detected Jupiter BUY (based on SOL decrease)");
+            TransactionType::Buy
+        } else {
+            println!("Detected Jupiter SELL (based on SOL increase)");
+            TransactionType::Sell
+        }
     };
 
     let amount_token = token_amount_change.abs();
-
-    // Calculate SOL amount change
-    let pre_sol = meta.pre_balances.first().copied().unwrap_or(0);
-    let post_sol = meta.post_balances.first().copied().unwrap_or(0);
-    let amount_sol = ((post_sol as i64 - pre_sol as i64).abs() as f64) / 1e9;
-
     let price_per_token = if amount_token > 0.0 {
         amount_sol / amount_token
     } else {

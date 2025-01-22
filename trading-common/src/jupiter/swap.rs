@@ -210,6 +210,72 @@ impl Jupiter {
         server_keypair: &impl Signer,
         request: &SellRequest,
     ) -> Result<SellResponse, AppError> {
+        let token_mint = Pubkey::from_str(&request.token_address)
+            .map_err(|e| AppError::TransactionError(format!("Invalid token address: {}", e)))?;
+
+        // Find all token accounts for this mint
+        let token_accounts = rpc_client
+            .get_token_accounts_by_owner(
+                &server_keypair.pubkey(),
+                TokenAccountsFilter::Mint(token_mint),
+            )
+            .map_err(|e| {
+                AppError::TransactionError(format!("Failed to get token accounts: {}", e))
+            })?;
+
+        println!(
+            "Found {} token accounts for mint {}",
+            token_accounts.len(),
+            token_mint
+        );
+
+        // Find first account with sufficient balance and verify it's still valid
+        let mut valid_token_account = None;
+        for account in token_accounts {
+            let pubkey = Pubkey::from_str(&account.pubkey)
+                .map_err(|e| AppError::TransactionError(format!("Invalid pubkey: {}", e)))?;
+
+            match rpc_client.get_token_account_balance(&pubkey) {
+                Ok(balance) => {
+                    println!(
+                        "Token account {} has balance {}",
+                        pubkey,
+                        balance.ui_amount.unwrap_or_default()
+                    );
+                    if balance.ui_amount.unwrap_or_default() >= request.token_quantity {
+                        valid_token_account = Some(account.pubkey);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    println!("Token account {} is invalid: {}", pubkey, e);
+                    continue;
+                }
+            }
+        }
+
+        let token_account = valid_token_account.ok_or_else(|| {
+            AppError::TransactionError(
+                "No valid token account with sufficient balance found".to_string(),
+            )
+        })?;
+
+        println!("Using token account {} for sell", token_account);
+
+        // Verify the balance one last time
+        let token_balance = rpc_client
+            .get_token_account_balance(&Pubkey::from_str(&token_account).unwrap())
+            .map_err(|e| AppError::TransactionError(format!("Failed to get token balance: {}", e)))?
+            .ui_amount
+            .unwrap_or_default();
+
+        if token_balance < request.token_quantity {
+            return Err(AppError::TransactionError(format!(
+                "Insufficient balance: Have {} tokens, trying to sell {}",
+                token_balance, request.token_quantity
+            )));
+        }
+
         // Create quote request
         let quote_request = JupiterQuoteRequest {
             input_mint: request.token_address.clone(),
@@ -318,13 +384,16 @@ impl Jupiter {
             })?;
         println!("Transaction sent: {}", signature);
 
+        let confirmation_config = CommitmentConfig::finalized();
+        let timeout = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(30); // 30 second timeout
 
         while start.elapsed() < timeout {
-            match rpc_client.get_signature_status(&signature)? {
-                Some(Ok(_)) => {
+            match rpc_client.get_signature_status_with_commitment(&signature, confirmation_config) {
+                Ok(Some(Ok(_))) => {
                     println!("Transaction confirmed in {:?}", start.elapsed());
+
+                    // Don't try to check token balance after sell - account might be closed
                     return Ok(SellResponse {
                         success: true,
                         signature: signature.to_string(),
@@ -335,13 +404,13 @@ impl Jupiter {
                         error: None,
                     });
                 }
-                Some(Err(e)) => {
+                Ok(Some(Err(e))) => {
                     return Err(AppError::TransactionError(format!(
                         "Transaction failed: {:?}",
                         e
                     )));
                 }
-                None => {
+                Ok(None) => {
                     println!(
                         "Transaction still pending... elapsed: {:?}",
                         start.elapsed()
@@ -349,10 +418,13 @@ impl Jupiter {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
+                Err(e) => {
+                    println!("Error checking signature status: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
             }
         }
 
-        // Timed out
         Err(AppError::TransactionError(
             "Transaction confirmation timed out".to_string(),
         ))
