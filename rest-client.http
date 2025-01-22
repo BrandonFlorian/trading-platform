@@ -109,7 +109,7 @@ Content-Type: application/json
 
 {
     "token_address": "{{raydiumTokenAddress}}",
-    "token_quantity": 804.5755840241909,
+    "token_quantity": 1000,
     "slippage_tolerance": 0.2
 }
 

@@ -68,8 +68,13 @@ pub struct PlatformFee {
 pub struct JupiterTransactionConfig {
     pub wrap_and_unwrap_sol: bool,
     pub compute_unit_price_micro_lamports: Option<u64>,
-    pub compute_unit_limit: Option<u32>,
+    pub compute_unit_limit: Option<u64>,
     pub prioritization_fee: Option<u64>,
+    pub use_shared_accounts: bool,
+    pub min_exchange_rate: Option<f64>,
+    pub use_alt: bool,
+    pub dynamic_compute_unit_limit: bool,
+    pub blockhash_slots_to_expiry: Option<u8>,
 }
 
 impl Default for JupiterTransactionConfig {
@@ -79,6 +84,11 @@ impl Default for JupiterTransactionConfig {
             compute_unit_price_micro_lamports: None,
             compute_unit_limit: None,
             prioritization_fee: None,
+            use_shared_accounts: true,
+            min_exchange_rate: None,
+            use_alt: true,
+            dynamic_compute_unit_limit: true,
+            blockhash_slots_to_expiry: Some(20),
         }
     }
 }
@@ -146,7 +156,41 @@ pub struct SwapInstructionsResponse {
     pub setup_instructions: Vec<EncodedInstruction>,
     pub swap_instruction: EncodedInstruction,
     pub cleanup_instruction: Option<EncodedInstruction>,
+    pub other_instructions: Vec<EncodedInstruction>,
     pub address_lookup_table_addresses: Vec<String>,
     pub prioritization_fee_lamports: u64,
     pub compute_unit_limit: u32,
+    pub prioritization_type: Option<PrioritizationType>,
+    pub simulation_slot: Option<u64>,
+    pub dynamic_slippage_report: Option<DynamicSlippageReport>,
+    pub simulation_error: Option<UiSimulationError>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UiSimulationError {
+    pub error_code: String,
+    pub error: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PrioritizationType {
+    pub compute_budget: ComputeBudget,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputeBudget {
+    pub micro_lamports: u64,
+    pub estimated_micro_lamports: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicSlippageReport {
+    pub slippage_bps: u16,
+    pub other_amount: Option<u64>,
+    pub simulated_incurred_slippage_bps: Option<i16>,
+    pub amplification_ratio: Option<f64>,
 }

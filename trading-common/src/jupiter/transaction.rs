@@ -1,5 +1,13 @@
-use crate::{jupiter::constants::JUPITER_PROGRAM_ID, TransactionType, WSOL};
+use std::str::FromStr;
+
+use super::EncodedInstruction;
+use crate::{error::AppError, jupiter::constants::JUPITER_PROGRAM_ID, TransactionType, WSOL};
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use solana_sdk::{
+    instruction::{AccountMeta, Instruction},
+    pubkey::Pubkey,
+};
 use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
 
 pub fn extract_transaction_details(
@@ -120,4 +128,34 @@ pub fn extract_accounts(
         }
         _ => Ok((String::new(), String::new())),
     }
+}
+
+pub fn convert_encoded(encoded: EncodedInstruction) -> Result<Instruction, AppError> {
+    let program_id = Pubkey::from_str(&encoded.program_id)
+        .map_err(|e| AppError::TransactionError(format!("Invalid program id: {}", e)))?;
+
+    let accounts = encoded
+        .accounts
+        .into_iter()
+        .map(|acc| {
+            let pubkey = Pubkey::from_str(&acc.pubkey).map_err(|e| {
+                AppError::TransactionError(format!("Invalid account pubkey: {}", e))
+            })?;
+            Ok(AccountMeta {
+                pubkey,
+                is_signer: acc.is_signer,
+                is_writable: acc.is_writable,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    let data = STANDARD
+        .decode(&encoded.data)
+        .map_err(|e| AppError::TransactionError(format!("Invalid instruction data: {}", e)))?;
+
+    Ok(Instruction {
+        program_id,
+        accounts,
+        data,
+    })
 }

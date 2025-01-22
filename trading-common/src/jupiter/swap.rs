@@ -1,21 +1,20 @@
+use super::convert_encoded;
 use super::{client::JupiterClient, types::*};
 use crate::error::AppError;
 use crate::models::{BuyRequest, BuyResponse, SellRequest, SellResponse};
-use base64::{engine::general_purpose::STANDARD, Engine};
-use solana_client::rpc_client::RpcClient;
-use solana_client::rpc_config::RpcSendTransactionConfig;
-use solana_client::rpc_request::TokenAccountsFilter;
-use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::instruction::AccountMeta;
+use solana_client::{
+    rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig, rpc_request::TokenAccountsFilter,
+};
 use solana_sdk::{
-    commitment_config::CommitmentLevel,
-    compute_budget::ComputeBudgetInstruction,
+    address_lookup_table::{state::AddressLookupTable, AddressLookupTableAccount},
+    commitment_config::{CommitmentConfig, CommitmentLevel},
     instruction::Instruction,
-    message::Message,
+    message::{v0, VersionedMessage},
     pubkey::Pubkey,
     signer::Signer,
-    transaction::{Transaction, VersionedTransaction},
+    transaction::VersionedTransaction,
 };
+use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
 
 #[derive(Default)]
@@ -32,99 +31,100 @@ impl Jupiter {
     ) -> Result<BuyResponse, AppError> {
         // Create quote request
         let quote_request = JupiterQuoteRequest {
-            input_mint: "So11111111111111111111111111111111111111112".to_string(), // WSOL
+            input_mint: "So11111111111111111111111111111111111111112".to_string(),
             output_mint: request.token_address.clone(),
             amount: ((request.sol_quantity * 1_000_000_000.0) as u64).to_string(),
             slippage_bps: (request.slippage_tolerance * 10_000.0) as u16,
             platform_fee_bps: None,
         };
 
-        // Get quote
         let quote_response = self.client.get_quote(&quote_request).await?;
 
-        // Get swap instructions instead of full transaction
         let swap_request = JupiterSwapRequest {
             user_public_key: server_keypair.pubkey().to_string(),
             quote_response: quote_response.clone(),
-            config: JupiterTransactionConfig {
-                wrap_and_unwrap_sol: true,
-                compute_unit_price_micro_lamports: Some(1_000_000), // We'll override this anyway
-                compute_unit_limit: Some(1_400_000),
-                prioritization_fee: None,
-            },
+            config: JupiterTransactionConfig::default(),
         };
 
         let swap_instructions = self.client.get_swap_instructions(&swap_request).await?;
 
-        // Build our own transaction with higher priority
-        let mut all_instructions = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(swap_instructions.compute_unit_limit),
-            ComputeBudgetInstruction::set_compute_unit_price(
-                swap_instructions
-                    .prioritization_fee_lamports
-                    .saturating_mul(2), // Use Jupiter's suggestion with a multiplier
-            ),
-        ];
-
-        // Convert encoded instructions to Solana Instructions
-        let convert_encoded = |encoded: EncodedInstruction| -> Result<Instruction, AppError> {
-            let program_id = Pubkey::from_str(&encoded.program_id)
-                .map_err(|e| AppError::TransactionError(format!("Invalid program id: {}", e)))?;
-
-            let accounts = encoded
-                .accounts
-                .into_iter()
-                .map(|acc| {
-                    let pubkey = Pubkey::from_str(&acc.pubkey).map_err(|e| {
-                        AppError::TransactionError(format!("Invalid account pubkey: {}", e))
-                    })?;
-                    Ok(AccountMeta {
-                        pubkey,
-                        is_signer: acc.is_signer,
-                        is_writable: acc.is_writable,
-                    })
+        // Load ALTs
+        let lookup_tables: Vec<AddressLookupTableAccount> = swap_instructions
+            .address_lookup_table_addresses
+            .iter()
+            .filter_map(|addr| {
+                let pubkey = Pubkey::from_str(addr).ok()?;
+                rpc_client.get_account(&pubkey).ok().and_then(|acc| {
+                    AddressLookupTable::deserialize(&acc.data)
+                        .ok()
+                        .map(|table| AddressLookupTableAccount {
+                            key: pubkey,
+                            addresses: table.addresses.to_vec(),
+                        })
                 })
-                .collect::<Result<Vec<_>, AppError>>()?;
-
-            let data = STANDARD.decode(&encoded.data).map_err(|e| {
-                AppError::TransactionError(format!("Invalid instruction data: {}", e))
-            })?;
-
-            Ok(Instruction {
-                program_id,
-                accounts,
-                data,
             })
-        };
+            .collect();
+        let recent_blockhash = rpc_client.get_latest_blockhash();
 
-        // Add all Jupiter instructions in order
+        // Build transaction with higher priority
+        let mut all_instructions = Vec::new();
+
+        // Add Jupiter's compute budget instructions first
+        for ix in swap_instructions.compute_budget_instructions {
+            all_instructions.push(convert_encoded(ix)?);
+        }
+
+        // Add token ledger if present
         if let Some(ledger) = swap_instructions.token_ledger_instruction {
             all_instructions.push(convert_encoded(ledger)?);
         }
 
-        for ix in swap_instructions.setup_instructions {
-            all_instructions.push(convert_encoded(ix)?);
-        }
+        // Add setup instructions
+        let setup_instructions: Vec<Instruction> = swap_instructions
+            .setup_instructions
+            .iter()
+            .map(|ix| convert_encoded(ix.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        all_instructions.extend(setup_instructions);
 
+        // Add swap instruction
         all_instructions.push(convert_encoded(swap_instructions.swap_instruction)?);
 
+        // Add cleanup if present
         if let Some(cleanup) = swap_instructions.cleanup_instruction {
             all_instructions.push(convert_encoded(cleanup)?);
         }
 
-        // Get fresh blockhash and create transaction
-        let recent_blockhash = rpc_client.get_latest_blockhash()?;
-        let message = Message::new(&all_instructions, Some(&server_keypair.pubkey()));
-        let transaction = Transaction::new(&[server_keypair], message, recent_blockhash);
-        let versioned_transaction = VersionedTransaction::from(transaction);
+        // Add any other instructions
+        for ix in swap_instructions.other_instructions {
+            all_instructions.push(convert_encoded(ix)?);
+        }
 
-        // Send with optimized config
+        // Use all_instructions in the message compilation
+        let v0_message = v0::Message::try_compile(
+            &server_keypair.pubkey(),
+            &all_instructions,
+            &lookup_tables,
+            recent_blockhash.unwrap(),
+        )
+        .map_err(|e| AppError::TransactionError(format!("Failed to compile message: {}", e)))?;
+
+        let versioned_transaction =
+            VersionedTransaction::try_new(VersionedMessage::V0(v0_message), &[server_keypair])
+                .map_err(|e| {
+                    AppError::TransactionError(format!(
+                        "Failed to create versioned transaction: {}",
+                        e
+                    ))
+                })?;
+
+        // Use faster commitment level
         let config = RpcSendTransactionConfig {
             skip_preflight: true,
-            preflight_commitment: Some(CommitmentLevel::Finalized),
-            encoding: None,
+            preflight_commitment: Some(CommitmentLevel::Processed),
+            encoding: Some(UiTransactionEncoding::Base64),
             max_retries: Some(5),
-            min_context_slot: None,
+            min_context_slot: Some(swap_instructions.simulation_slot.unwrap_or_default()),
         };
 
         let signature = rpc_client.send_transaction_with_config(&versioned_transaction, config)?;
@@ -198,7 +198,7 @@ impl Jupiter {
             }
         }
 
-        // If we reach here, we've timed out
+        // Timed out
         Err(AppError::TransactionError(
             "Transaction confirmation timed out".to_string(),
         ))
@@ -222,129 +222,109 @@ impl Jupiter {
         // Get quote
         let quote_response = self.client.get_quote(&quote_request).await?;
 
-        // Get swap instructions instead of full transaction
+        // Get swap instructions
         let swap_request = JupiterSwapRequest {
             user_public_key: server_keypair.pubkey().to_string(),
             quote_response: quote_response.clone(),
-            config: JupiterTransactionConfig {
-                wrap_and_unwrap_sol: true,
-                compute_unit_price_micro_lamports: Some(1_000_000), // We'll override this anyway
-                compute_unit_limit: Some(1_400_000),
-                prioritization_fee: None,
-            },
+            config: JupiterTransactionConfig::default(),
         };
 
         let swap_instructions = self.client.get_swap_instructions(&swap_request).await?;
 
-        // Build our own transaction with higher priority
-        let mut all_instructions = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(swap_instructions.compute_unit_limit),
-            ComputeBudgetInstruction::set_compute_unit_price(
-                swap_instructions
-                    .prioritization_fee_lamports
-                    .saturating_mul(2), // Use Jupiter's suggestion with a multiplier
-            ),
-        ];
-
-        // Convert encoded instructions to Solana Instructions
-        let convert_encoded = |encoded: EncodedInstruction| -> Result<Instruction, AppError> {
-            let program_id = Pubkey::from_str(&encoded.program_id)
-                .map_err(|e| AppError::TransactionError(format!("Invalid program id: {}", e)))?;
-
-            let accounts = encoded
-                .accounts
-                .into_iter()
-                .map(|acc| {
-                    let pubkey = Pubkey::from_str(&acc.pubkey).map_err(|e| {
-                        AppError::TransactionError(format!("Invalid account pubkey: {}", e))
-                    })?;
-                    Ok(AccountMeta {
-                        pubkey,
-                        is_signer: acc.is_signer,
-                        is_writable: acc.is_writable,
-                    })
+        // Load ALTs
+        let lookup_tables: Vec<AddressLookupTableAccount> = swap_instructions
+            .address_lookup_table_addresses
+            .iter()
+            .filter_map(|addr| {
+                let pubkey = Pubkey::from_str(addr).ok()?;
+                rpc_client.get_account(&pubkey).ok().and_then(|acc| {
+                    AddressLookupTable::deserialize(&acc.data)
+                        .ok()
+                        .map(|table| AddressLookupTableAccount {
+                            key: pubkey,
+                            addresses: table.addresses.to_vec(),
+                        })
                 })
-                .collect::<Result<Vec<_>, AppError>>()?;
-
-            let data = STANDARD.decode(&encoded.data).map_err(|e| {
-                AppError::TransactionError(format!("Invalid instruction data: {}", e))
-            })?;
-
-            Ok(Instruction {
-                program_id,
-                accounts,
-                data,
             })
-        };
+            .collect();
 
-        // Add all Jupiter instructions in order
+        let recent_blockhash = rpc_client.get_latest_blockhash()?;
+
+        // Build transaction
+        let mut all_instructions = Vec::new();
+
+        // Add Jupiter's compute budget instructions first
+        for ix in swap_instructions.compute_budget_instructions {
+            all_instructions.push(convert_encoded(ix)?);
+        }
+
+        // Add token ledger if present
         if let Some(ledger) = swap_instructions.token_ledger_instruction {
             all_instructions.push(convert_encoded(ledger)?);
         }
 
-        for ix in swap_instructions.setup_instructions {
-            all_instructions.push(convert_encoded(ix)?);
-        }
+        // Add setup instructions
+        let setup_instructions: Vec<Instruction> = swap_instructions
+            .setup_instructions
+            .iter()
+            .map(|ix| convert_encoded(ix.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        all_instructions.extend(setup_instructions);
 
+        // Add swap instruction
         all_instructions.push(convert_encoded(swap_instructions.swap_instruction)?);
 
+        // Add cleanup if present
         if let Some(cleanup) = swap_instructions.cleanup_instruction {
             all_instructions.push(convert_encoded(cleanup)?);
         }
 
-        // Get fresh blockhash and create transaction
-        let recent_blockhash = rpc_client.get_latest_blockhash()?;
-        let message = Message::new(&all_instructions, Some(&server_keypair.pubkey()));
-        let transaction = Transaction::new(&[server_keypair], message, recent_blockhash);
-        let versioned_transaction = VersionedTransaction::from(transaction);
+        // Add any other instructions
+        for ix in swap_instructions.other_instructions {
+            all_instructions.push(convert_encoded(ix)?);
+        }
 
-        // Send with optimized config
+        // Use all_instructions in the message compilation
+        let v0_message = v0::Message::try_compile(
+            &server_keypair.pubkey(),
+            &all_instructions,
+            &lookup_tables,
+            recent_blockhash,
+        )
+        .map_err(|e| AppError::TransactionError(format!("Failed to compile message: {}", e)))?;
+
+        let versioned_transaction =
+            VersionedTransaction::try_new(VersionedMessage::V0(v0_message), &[server_keypair])
+                .map_err(|e| {
+                    AppError::TransactionError(format!(
+                        "Failed to create versioned transaction: {}",
+                        e
+                    ))
+                })?;
+
+        // Send with config
         let config = RpcSendTransactionConfig {
             skip_preflight: true,
-            preflight_commitment: Some(CommitmentLevel::Finalized),
-            encoding: None,
+            preflight_commitment: Some(CommitmentLevel::Processed),
+            encoding: Some(UiTransactionEncoding::Base64),
             max_retries: Some(5),
-            min_context_slot: None,
+            min_context_slot: Some(swap_instructions.simulation_slot.unwrap_or_default()),
         };
 
-        let signature = rpc_client.send_transaction_with_config(&versioned_transaction, config)?;
+        let signature = rpc_client
+            .send_transaction_with_config(&versioned_transaction, config)
+            .map_err(|e| {
+                AppError::TransactionError(format!("Failed to send transaction: {}", e))
+            })?;
+        println!("Transaction sent: {}", signature);
 
-        // Wait for confirmation with increased timeout
-        let confirmation_config = CommitmentConfig::finalized();
-        let timeout = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(30); // 30 second timeout
 
         while start.elapsed() < timeout {
-            match rpc_client.get_signature_status_with_commitment(&signature, confirmation_config) {
-                Ok(Some(Ok(()))) => {
-                    println!("Transaction confirmed successfully: {}", signature);
-                    println!("Sell successful, checking token accounts...");
-                    let token_pubkey = Pubkey::from_str(&request.token_address).map_err(|e| {
-                        AppError::TransactionError(format!("Invalid token address: {}", e))
-                    })?;
-
-                    // Check all possible token accounts
-                    let token_accounts = rpc_client
-                        .get_token_accounts_by_owner(
-                            &server_keypair.pubkey(),
-                            TokenAccountsFilter::Mint(token_pubkey),
-                        )
-                        .map_err(|e| {
-                            AppError::TransactionError(format!(
-                                "Failed to get token accounts: {}",
-                                e
-                            ))
-                        })?;
-
-                    println!("Found {} token accounts after sell:", token_accounts.len());
-                    for account in token_accounts {
-                        println!("Token account: {}", account.pubkey);
-                        if let Ok(balance) = rpc_client
-                            .get_token_account_balance(&Pubkey::from_str(&account.pubkey).unwrap())
-                        {
-                            println!("Balance: {}", balance.ui_amount.unwrap_or_default());
-                        }
-                    }
+            match rpc_client.get_signature_status(&signature)? {
+                Some(Ok(_)) => {
+                    println!("Transaction confirmed in {:?}", start.elapsed());
                     return Ok(SellResponse {
                         success: true,
                         signature: signature.to_string(),
@@ -355,28 +335,24 @@ impl Jupiter {
                         error: None,
                     });
                 }
-                Ok(Some(Err(e))) => {
+                Some(Err(e)) => {
                     return Err(AppError::TransactionError(format!(
                         "Transaction failed: {:?}",
                         e
                     )));
                 }
-                Ok(None) => {
+                None => {
                     println!(
                         "Transaction still pending... elapsed: {:?}",
                         start.elapsed()
                     );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
-                }
-                Err(e) => {
-                    println!("Error checking signature status: {}", e);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 }
             }
         }
 
-        // If we reach here, we've timed out
+        // Timed out
         Err(AppError::TransactionError(
             "Transaction confirmation timed out".to_string(),
         ))
