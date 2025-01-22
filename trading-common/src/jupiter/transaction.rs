@@ -1,9 +1,6 @@
-use crate::TransactionType;
+use crate::{jupiter::constants::JUPITER_PROGRAM_ID, TransactionType, WSOL};
 use anyhow::Result;
 use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
-
-pub const JUPITER_PROGRAM_ID: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
-pub const WSOL: &str = "So11111111111111111111111111111111111111112";
 
 pub fn extract_transaction_details(
     transaction: &EncodedConfirmedTransactionWithStatusMeta,

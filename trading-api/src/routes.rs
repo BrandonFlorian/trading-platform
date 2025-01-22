@@ -13,7 +13,6 @@ use trading_common::{
     data::{get_metadata, get_server_keypair},
     error::AppError,
     event_system::Event,
-    jupiter,
     models::{
         BuyRequest, BuyResponse, SellRequest, SellResponse, SettingsUpdateNotification,
         TradeExecution, TradeExecutionNotification, WalletStateChange, WalletStateChangeType,
@@ -24,6 +23,7 @@ use trading_common::{
         buy::process_buy_request as process_raydium_buy,
         sell::process_sell_request as process_raydium_sell,
     },
+    swap::Jupiter,
     CopyTradeSettings, TrackedWallet, TradeExecutionRequest, TransactionLog,
 };
 use uuid::Uuid;
@@ -575,70 +575,74 @@ pub async fn jupiter_buy(
     State(state): State<AppState>,
     Json(request): Json<BuyRequest>,
 ) -> Result<Json<BuyResponse>, AppError> {
-    let rpc_client = state.rpc_client.load();
-    let server_keypair = get_server_keypair();
-
-    let token_address = request.token_address.clone();
     println!("Processing Jupiter buy request: {:?}", request);
+    let rpc_client = state.rpc_client.load();
+    // Create Jupiter client
+    let jupiter = Jupiter::default();
 
-    let response = jupiter::process_buy_request(&rpc_client, &server_keypair, &request).await?;
+    // Process buy request
+    let response = jupiter
+        .process_buy_request(&rpc_client, &get_server_keypair(), &request)
+        .await?;
 
-    if response.success {
-        let wallet_client = state.wallet_client.clone();
-        let trade_request = TradeExecutionRequest {
-            signature: response.signature.clone(),
-            token_address: token_address.clone(),
-            transaction_type: "Buy".to_string(),
-            amount_token: response.token_quantity,
-            amount_sol: response.sol_spent,
-            price_per_token: response.sol_spent / response.token_quantity,
-            token_name: String::new(),
-            token_symbol: String::new(),
-            token_image_uri: String::new(),
-        };
+    // Handle wallet update
+    let wallet_client = state.wallet_client.clone();
+    let trade_request = trading_common::TradeExecutionRequest {
+        signature: response.signature.clone(),
+        token_address: request.token_address.clone(),
+        transaction_type: "Buy".to_string(),
+        amount_token: response.token_quantity,
+        amount_sol: response.sol_spent,
+        price_per_token: response.sol_spent / response.token_quantity,
+        // Optional metadata fields
+        token_name: String::new(),
+        token_symbol: String::new(),
+        token_image_uri: String::new(),
+    };
 
-        tokio::spawn(async move {
-            if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
-                eprintln!("Error updating wallet state: {}", e);
-            }
-        });
+    tokio::spawn(async move {
+        if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
+            eprintln!("Error updating wallet state: {}", e);
+        }
+    });
 
-        // Log successful manual trade
-        let transaction_log = TransactionLog {
-            id: Uuid::new_v4(),
-            user_id: server_keypair.pubkey().to_string(),
-            tracked_wallet_id: None, // None indicates manual trade
-            signature: response.signature.clone(),
-            transaction_type: "Buy".to_string(),
-            token_address: token_address.clone(),
-            amount: response.token_quantity,
-            price_sol: response.sol_spent,
-            timestamp: Utc::now(),
-        };
+    // Log transaction
+    let transaction_log = trading_common::TransactionLog {
+        id: uuid::Uuid::new_v4(),
+        user_id: get_server_keypair().pubkey().to_string(),
+        tracked_wallet_id: None,
+        signature: response.signature.clone(),
+        transaction_type: "Buy".to_string(),
+        token_address: request.token_address.clone(),
+        amount: response.token_quantity,
+        price_sol: response.sol_spent,
+        timestamp: chrono::Utc::now(),
+    };
 
-        // Emit trade execution event
-        state
-            .event_system
-            .emit(Event::TradeExecution(TradeExecutionNotification {
-                data: TradeExecution {
+    // Emit trade execution event
+    state
+        .event_system
+        .emit(trading_common::event_system::Event::TradeExecution(
+            trading_common::models::TradeExecutionNotification {
+                data: trading_common::models::TradeExecution {
                     id: transaction_log.id,
                     trade_type: "manual".to_string(),
                     dex_type: "jupiter".to_string(),
                     transaction_type: "buy".to_string(),
-                    token_address,
+                    token_address: request.token_address,
                     amount: response.token_quantity,
                     price_sol: response.sol_spent,
                     signature: response.signature.clone(),
-                    timestamp: Utc::now(),
+                    timestamp: chrono::Utc::now(),
                     status: "success".to_string(),
                     error: None,
                 },
                 type_: "trade_execution".to_string(),
-            }));
+            },
+        ));
 
-        if let Err(e) = state.supabase_client.log_transaction(transaction_log).await {
-            println!("Failed to log transaction: {}", e);
-        }
+    if let Err(e) = state.supabase_client.log_transaction(transaction_log).await {
+        println!("Failed to log transaction: {}", e);
     }
 
     Ok(Json(response))
@@ -648,70 +652,69 @@ pub async fn jupiter_sell(
     State(state): State<AppState>,
     Json(request): Json<SellRequest>,
 ) -> Result<Json<SellResponse>, AppError> {
-    let rpc_client = state.rpc_client.load();
-    let server_keypair = get_server_keypair();
-
-    let token_address = request.token_address.clone();
     println!("Processing Jupiter sell request: {:?}", request);
+    let rpc_client = state.rpc_client.load();
 
-    let response = jupiter::process_sell_request(&rpc_client, &server_keypair, &request).await?;
+    let jupiter = Jupiter::default();
 
-    if response.success {
-        let wallet_client = state.wallet_client.clone();
-        let trade_request = TradeExecutionRequest {
-            signature: response.signature.clone(),
-            token_address: token_address.clone(),
-            transaction_type: "Sell".to_string(),
-            amount_token: response.token_quantity,
-            amount_sol: response.sol_received,
-            price_per_token: response.sol_received / response.token_quantity,
-            token_name: String::new(),
-            token_symbol: String::new(),
-            token_image_uri: String::new(),
-        };
+    let response = jupiter
+        .process_sell_request(&rpc_client, &get_server_keypair(), &request)
+        .await?;
 
-        tokio::spawn(async move {
-            if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
-                eprintln!("Error updating wallet state: {}", e);
-            }
-        });
+    let wallet_client = state.wallet_client.clone();
+    let trade_request = trading_common::TradeExecutionRequest {
+        signature: response.signature.clone(),
+        token_address: request.token_address.clone(),
+        transaction_type: "Sell".to_string(),
+        amount_token: response.token_quantity,
+        amount_sol: response.sol_received,
+        price_per_token: response.sol_received / response.token_quantity,
+        token_name: String::new(),
+        token_symbol: String::new(),
+        token_image_uri: String::new(),
+    };
 
-        // Log successful manual trade
-        let transaction_log = TransactionLog {
-            id: Uuid::new_v4(),
-            user_id: server_keypair.pubkey().to_string(),
-            tracked_wallet_id: None, // None indicates manual trade
-            signature: response.signature.clone(),
-            transaction_type: "Sell".to_string(),
-            token_address: token_address.clone(),
-            amount: response.token_quantity,
-            price_sol: response.sol_received,
-            timestamp: Utc::now(),
-        };
+    tokio::spawn(async move {
+        if let Err(e) = wallet_client.handle_trade_execution(trade_request).await {
+            eprintln!("Error updating wallet state: {}", e);
+        }
+    });
 
-        // Emit trade execution event
-        state
-            .event_system
-            .emit(Event::TradeExecution(TradeExecutionNotification {
-                data: TradeExecution {
+    let transaction_log = trading_common::TransactionLog {
+        id: uuid::Uuid::new_v4(),
+        user_id: get_server_keypair().pubkey().to_string(),
+        tracked_wallet_id: None,
+        signature: response.signature.clone(),
+        transaction_type: "Sell".to_string(),
+        token_address: request.token_address.clone(),
+        amount: response.token_quantity,
+        price_sol: response.sol_received,
+        timestamp: chrono::Utc::now(),
+    };
+
+    state
+        .event_system
+        .emit(trading_common::event_system::Event::TradeExecution(
+            trading_common::models::TradeExecutionNotification {
+                data: trading_common::models::TradeExecution {
                     id: transaction_log.id,
                     trade_type: "manual".to_string(),
                     dex_type: "jupiter".to_string(),
                     transaction_type: "sell".to_string(),
-                    token_address,
+                    token_address: request.token_address,
                     amount: response.token_quantity,
                     price_sol: response.sol_received,
                     signature: response.signature.clone(),
-                    timestamp: Utc::now(),
+                    timestamp: chrono::Utc::now(),
                     status: "success".to_string(),
                     error: None,
                 },
                 type_: "trade_execution".to_string(),
-            }));
+            },
+        ));
 
-        if let Err(e) = state.supabase_client.log_transaction(transaction_log).await {
-            println!("Failed to log transaction: {}", e);
-        }
+    if let Err(e) = state.supabase_client.log_transaction(transaction_log).await {
+        println!("Failed to log transaction: {}", e);
     }
 
     Ok(Json(response))

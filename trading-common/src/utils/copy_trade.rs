@@ -85,7 +85,10 @@ pub async fn execute_copy_trade(
                     raydium::process_buy_request(rpc_client, server_keypair, &request).await?
                 }
                 DexType::Jupiter => {
-                    jupiter::process_buy_request(rpc_client, server_keypair, &request).await?
+                    let jupiter = jupiter::swap::Jupiter::default();
+                    jupiter
+                        .process_buy_request(rpc_client, server_keypair, &request)
+                        .await?
                 }
                 DexType::Unknown => {
                     return Err(anyhow::anyhow!("Unknown DEX type"));
@@ -170,7 +173,10 @@ pub async fn execute_copy_trade(
                         raydium::process_sell_request(rpc_client, server_keypair, &request).await?
                     }
                     DexType::Jupiter => {
-                        jupiter::process_sell_request(rpc_client, server_keypair, &request).await?
+                        let jupiter = jupiter::swap::Jupiter::default();
+                        jupiter
+                            .process_sell_request(rpc_client, server_keypair, &request)
+                            .await?
                     }
                     DexType::Unknown => {
                         return Err(anyhow::anyhow!("Unknown DEX type"));

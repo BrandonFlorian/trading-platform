@@ -48,7 +48,7 @@ impl DexTransaction {
             // Check for Jupiter signatures first as it might route through other DEXs
             let is_jupiter = logs
                 .iter()
-                .any(|log| log.contains(jupiter::transaction::JUPITER_PROGRAM_ID));
+                .any(|log| log.contains(jupiter::constants::JUPITER_PROGRAM_ID));
             if is_jupiter {
                 println!("Detected Jupiter transaction");
                 return DexType::Jupiter;

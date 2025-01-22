@@ -49,3 +49,4 @@ tonic = { version = "0.12.3", features = ["transport"] }
 prost = "0.13.4"
 tower-http = { version = "0.6.2", features = ["cors"] }
 bincode = "1.3.3"
+rust_decimal = "1.36.0"
