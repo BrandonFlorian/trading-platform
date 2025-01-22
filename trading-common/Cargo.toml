@@ -37,6 +37,9 @@ tokio-native-tls = { workspace = true }
 redis = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
-
+reqwest = { workspace = true }
+bincode = { workspace = true }
+rust_decimal = { workspace = true }
+arc-swap = { workspace = true }
 [build-dependencies]
 tonic-build = "0.12.3"
