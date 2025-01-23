@@ -83,7 +83,7 @@ The project is organized as a Rust workspace with four main components:
 - Protocol Buffers compiler (protoc)
 - docker and docker-compose
 - protobuf
-  
+
 ![trading-platform-diagram](https://github.com/user-attachments/assets/d8f0b4b7-5b99-4719-898a-671e230627cb)
 
 ## Protocol Buffers (gRPC) Setup
@@ -194,6 +194,8 @@ The trading API provides the following endpoints:
 - `POST /pump_fun/sell`: Execute sell on pump.fun
 - `POST /raydium/buy`: Execute buy on Raydium
 - `POST /raydium/sell`: Execute sell on Raydium
+- `POST /jupiter/buy`: Execute buy on Jupiter
+- `POST /jupiter/sell`: Execute sell on Jupiter
 
 ### Transaction History
 

@@ -1,0 +1,8 @@
+[package]
+name = "run"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cargo_metadata = "0.19.1"
+serde_json = { version = "1.0.137", features = ["raw_value"] }
