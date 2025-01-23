@@ -9,8 +9,8 @@ use crate::dex::DexType;
 use crate::models::SellRequest;
 use crate::server_wallet_client::WalletClient;
 use crate::utils::data::get_token_balance;
+use crate::{jupiter, pumpdotfun, WalletInfoResponse};
 use crate::{models::BuyRequest, ClientTxInfo, CopyTradeSettings, TransactionType};
-use crate::{pumpdotfun, WalletInfoResponse};
 use crate::{raydium, TradeExecutionRequest};
 
 pub async fn should_copy_trade(
@@ -18,6 +18,11 @@ pub async fn should_copy_trade(
     settings: &CopyTradeSettings,
     wallet_info: &WalletInfoResponse,
 ) -> Result<bool> {
+    if tx_info.amount_token == 0.0 && tx_info.amount_sol == 0.0 {
+        println!("Skipping zero-amount transaction");
+        return Ok(false);
+    }
+
     // Token allowlist check
     if settings.use_allowed_tokens_list {
         if let Some(allowed_tokens) = &settings.allowed_tokens {
@@ -29,36 +34,40 @@ pub async fn should_copy_trade(
 
     match tx_info.transaction_type {
         TransactionType::Buy => {
-            // Check current positions using wallet_info
+            println!(
+                "Evaluating buy transaction for token: {}",
+                tx_info.token_address
+            );
+            // Add more logging
             let current_positions = wallet_info.tokens.len();
+            println!(
+                "Current positions: {}/{}",
+                current_positions, settings.max_open_positions
+            );
 
             if current_positions >= settings.max_open_positions as usize {
-                println!(
-                    "Maximum open positions reached: Current {} of {}",
-                    current_positions, settings.max_open_positions
-                );
+                println!("Maximum open positions reached");
                 return Ok(false);
             }
 
-            if !settings.allow_additional_buys {
-                // Check if we already hold this token
-                if wallet_info
+            if !settings.allow_additional_buys
+                && wallet_info
                     .tokens
                     .iter()
                     .any(|t| t.address == tx_info.token_address)
-                {
-                    println!("Additional buys not allowed and token already held");
-                    return Ok(false);
-                }
+            {
+                println!("Additional buys not allowed for existing token");
+                return Ok(false);
             }
+
+            Ok(true)
         }
         TransactionType::Sell => {
             // Sell-specific validation
+            Ok(true)
         }
-        _ => return Ok(false),
+        _ => Ok(false),
     }
-
-    Ok(true)
 }
 
 pub async fn execute_copy_trade(
@@ -83,6 +92,12 @@ pub async fn execute_copy_trade(
                 }
                 DexType::Raydium => {
                     raydium::process_buy_request(rpc_client, server_keypair, &request).await?
+                }
+                DexType::Jupiter => {
+                    let jupiter = jupiter::swap::Jupiter::default();
+                    jupiter
+                        .process_buy_request(rpc_client, server_keypair, &request)
+                        .await?
                 }
                 DexType::Unknown => {
                     return Err(anyhow::anyhow!("Unknown DEX type"));
@@ -165,6 +180,12 @@ pub async fn execute_copy_trade(
                     }
                     DexType::Raydium => {
                         raydium::process_sell_request(rpc_client, server_keypair, &request).await?
+                    }
+                    DexType::Jupiter => {
+                        let jupiter = jupiter::swap::Jupiter::default();
+                        jupiter
+                            .process_sell_request(rpc_client, server_keypair, &request)
+                            .await?
                     }
                     DexType::Unknown => {
                         return Err(anyhow::anyhow!("Unknown DEX type"));
