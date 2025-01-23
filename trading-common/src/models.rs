@@ -387,3 +387,31 @@ pub struct TransactionStateNotification {
     #[serde(rename = "type")]
     pub type_: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Watchlist {
+    pub id: Option<Uuid>,
+    pub user_id: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchlistToken {
+    pub id: Option<Uuid>,
+    pub watchlist_id: Uuid,
+    pub token_address: String,
+    pub added_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchlistWithTokens {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub tokens: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

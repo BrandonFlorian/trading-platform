@@ -59,3 +59,21 @@ CREATE TABLE transactions (
   price_sol DECIMAL(18, 9) NOT NULL,
   timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE watchlists (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id TEXT REFERENCES users(wallet_address) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, name)
+);
+
+CREATE TABLE watchlist_tokens (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY, 
+  watchlist_id UUID REFERENCES watchlists(id) ON DELETE CASCADE,
+  token_address TEXT NOT NULL,
+  added_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(watchlist_id, token_address)
+);

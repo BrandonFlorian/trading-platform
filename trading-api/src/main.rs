@@ -154,7 +154,19 @@ async fn main() -> Result<()> {
             "/token_metadata/{token_address}",
             get(routes::get_token_metadata),
         )
-        .route("/wallet/update", post(routes::trigger_wallet_update))
+        .route("/watchlists", get(routes::get_watchlists))
+        .route("/watchlists/{watchlist_id}", get(routes::get_watchlist))
+        .route("/watchlists", post(routes::create_watchlist))
+        .route("/watchlists", put(routes::update_watchlist))
+        .route(
+            "/watchlists/{watchlist_id}",
+            delete(routes::delete_watchlist),
+        )
+        .route("/watchlists/tokens", post(routes::add_token_to_watchlist))
+        .route(
+            "/watchlists/{watchlist_id}/tokens/{token_address}",
+            delete(routes::remove_token_from_watchlist),
+        )
         .with_state(state)
         .layer(cors);
     let port = env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());

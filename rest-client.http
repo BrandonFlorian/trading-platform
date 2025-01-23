@@ -6,6 +6,8 @@
 @raydiumTokenAddress = {{$dotenv RAYDIUM_TOKEN_ADDRESS}}
 @jupiterTokenAddress = {{$dotenv JUPITER_TOKEN_ADDRESS}}
 
+@watchlistId = {{$dotenv WATCHLIST_ID}}
+
 ### Get server wallet info
 GET {{baseUrl}}/wallet/info
 
@@ -145,3 +147,42 @@ GET {{baseUrl}}/token_metadata/{{pumpFunTokenAddress}}
 ### Get token metadata
 GET {{baseUrl}}/token_metadata/{{raydiumTokenAddress}}
 
+### Get all watchlists
+GET {{baseUrl}}/watchlists
+
+### Get specific watchlist
+GET {{baseUrl}}/watchlists/{{watchlistId}}
+
+### Create a new watchlist
+POST {{baseUrl}}/watchlists
+Content-Type: application/json
+
+{
+    "name": "My Watchlist",
+    "description": "My first watchlist for tracking interesting tokens"
+}
+
+### Update a watchlist
+PUT {{baseUrl}}/watchlists
+Content-Type: application/json
+
+{
+    "id": "{{watchlistId}}",
+    "name": "Updated Watchlist Name",
+    "description": "Updated watchlist description"
+}
+
+### Delete a watchlist
+DELETE {{baseUrl}}/watchlists/{{watchlistId}}
+
+### Add token to watchlist
+POST {{baseUrl}}/watchlists/tokens
+Content-Type: application/json
+
+{
+    "watchlist_id": "{{watchlistId}}",
+    "token_address": "{{pumpFunTokenAddress}}"
+}
+
+### Remove token from watchlist
+DELETE {{baseUrl}}/watchlists/{{watchlistId}}/tokens/{{pumpFunTokenAddress}}
