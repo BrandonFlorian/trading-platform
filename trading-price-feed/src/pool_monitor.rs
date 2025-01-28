@@ -1,34 +1,42 @@
-use crate::{
-    config::PriceFeedConfig,
-    raydium::{self, RaydiumPool},
-};
-use parking_lot::RwLock;
+use crate::{config::PriceFeedConfig, raydium::RaydiumPool};
+use chrono::{DateTime, Utc};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
-    client_error::reqwest,
     rpc_client::RpcClient,
+    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
-use std::{collections::HashMap, error::Error, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    sync::Arc,
+};
+use tokio::sync::RwLock;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use trading_common::{
+    dex::DexType,
     error::AppError,
     event_system::EventSystem,
     models::{ConnectionStatus, ConnectionType, PriceUpdate},
-    ConnectionMonitor, RaydiumPoolInfo, RAYDIUM_V4,
+    ConnectionMonitor, RAYDIUM_V4,
 };
+
+struct ActiveTokenFeed {
+    pool_address: Pubkey,
+    last_update: DateTime<Utc>,
+    subscribers: HashSet<String>, // Client IDs
+}
 
 pub struct PoolMonitor {
     rpc_client: Arc<RpcClient>,
     event_system: Arc<EventSystem>,
     connection_monitor: Arc<ConnectionMonitor>,
-    price_sender: Option<broadcast::Sender<PriceUpdate>>,
-    pools: Vec<RaydiumPool>,
+    price_sender: Arc<RwLock<Option<broadcast::Sender<PriceUpdate>>>>,
     stop_sender: Option<mpsc::Sender<()>>,
     config: PriceFeedConfig,
-    pool_cache: Arc<RwLock<HashMap<String, RaydiumPoolInfo>>>,
+    active_tokens: Arc<RwLock<HashMap<String, ActiveTokenFeed>>>,
 }
 
 impl PoolMonitor {
@@ -42,11 +50,10 @@ impl PoolMonitor {
             rpc_client,
             event_system,
             connection_monitor,
-            price_sender: None,
-            pools: Vec::new(),
+            price_sender: Arc::new(RwLock::new(None)),
             stop_sender: None,
             config,
-            pool_cache: Arc::new(RwLock::new(HashMap::new())),
+            active_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -54,40 +61,42 @@ impl PoolMonitor {
         let (price_tx, _) = broadcast::channel(100);
         let (stop_tx, stop_rx) = mpsc::channel(1);
 
-        self.price_sender = Some(price_tx.clone());
+        let mut price_sender = self.price_sender.write().await;
+        *price_sender = Some(price_tx.clone());
         self.stop_sender = Some(stop_tx);
 
-        // Start monitoring task
+        // Clone what we need for the monitoring task
         let rpc_client = Arc::clone(&self.rpc_client);
         let connection_monitor = Arc::clone(&self.connection_monitor);
         let price_tx = price_tx.clone();
-        let token_addresses = self.config.token_addresses.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-            let mut stop_rx = stop_rx;
+        let active_tokens = Arc::clone(&self.active_tokens);
 
-            loop {
-                tokio::select! {
-                    _ = stop_rx.recv() => {
-                        break;
-                    }
-                    _ = interval.tick() => {
-                        if let Err(e) = Self::update_pool_prices(
-                            &rpc_client,
-                            &price_tx,
-                            &connection_monitor,
-                            &token_addresses,
-                        )
-                        .await
-                        {
-                            tracing::error!("Failed to update pool prices: {}", e);
-                            connection_monitor
-                                .update_status(
-                                    ConnectionType::WebSocket,
-                                    ConnectionStatus::Error,
-                                    Some(e.to_string()),
-                                )
-                                .await;
+        tokio::spawn({
+            let connection_monitor = connection_monitor.clone();
+            async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+                let mut stop_rx = stop_rx;
+
+                loop {
+                    tokio::select! {
+                        _ = stop_rx.recv() => {
+                            break;
+                        }
+                        _ = interval.tick() => {
+                            if let Err(e) = Self::update_pool_prices(
+                                &rpc_client,
+                                &price_tx,
+                                &active_tokens,
+                            ).await {
+                                tracing::error!("Failed to update pool prices: {}", e);
+                                connection_monitor
+                                    .update_status(
+                                        ConnectionType::WebSocket,
+                                        ConnectionStatus::Error,
+                                        Some(e.to_string()),
+                                    )
+                                    .await;
+                            }
                         }
                     }
                 }
@@ -104,13 +113,15 @@ impl PoolMonitor {
         Ok(())
     }
 
-    pub fn subscribe_to_updates(&self) -> ReceiverStream<PriceUpdate> {
+    pub async fn subscribe_to_updates(&self) -> ReceiverStream<PriceUpdate> {
         let (tx, rx) = mpsc::channel(100);
 
-        if let Some(price_sender) = &self.price_sender {
-            let mut price_rx = price_sender.subscribe();
+        // Get a read lock and clone the sender if it exists
+        if let Some(price_sender) = self.price_sender.read().await.as_ref() {
+            let price_sender = price_sender.clone();
 
             tokio::spawn(async move {
+                let mut price_rx = price_sender.subscribe();
                 while let Ok(price) = price_rx.recv().await {
                     if tx.send(price).await.is_err() {
                         break;
@@ -125,227 +136,133 @@ impl PoolMonitor {
     async fn update_pool_prices(
         rpc_client: &Arc<RpcClient>,
         price_tx: &broadcast::Sender<PriceUpdate>,
-        connection_monitor: &Arc<ConnectionMonitor>,
-        token_addresses: &[String],
+        active_tokens: &Arc<RwLock<HashMap<String, ActiveTokenFeed>>>,
     ) -> Result<(), AppError> {
-        let program_id = Pubkey::from_str(RAYDIUM_V4)
-            .map_err(|_| AppError::InvalidPoolAddress(RAYDIUM_V4.to_string()))?;
+        // Take a snapshot of the current active tokens
+        let tokens: Vec<(String, Pubkey)> = {
+            let active_tokens = active_tokens.read().await;
+            tracing::debug!("Active tokens: {}", active_tokens.len());
+            active_tokens
+                .iter()
+                .map(|(addr, feed)| (addr.clone(), feed.pool_address))
+                .collect()
+        };
 
-        // Known pool address for debugging
-        let known_pool = Pubkey::from_str("CpsMssqi3P9VMvNqxrdWVbSBCwyUHbGgNcrw7MorBq3g")?;
+        for (token_address, pool_address) in tokens {
+            tracing::debug!("Fetching price for token: {}", token_address);
+            match rpc_client.get_account(&pool_address) {
+                Ok(account) => {
+                    tracing::debug!("Got account data for pool: {}", pool_address);
+                    if let Ok(pool) = RaydiumPool::from_account_data(&pool_address, &account.data) {
+                        if let Ok(price_data) = pool.fetch_price_data(rpc_client).await {
+                            tracing::debug!("Price data: {:?}", price_data);
+                            let update = PriceUpdate {
+                                token_address: token_address.clone(),
+                                price_sol: price_data.price_sol,
+                                timestamp: Utc::now().timestamp(),
+                                dex_type: DexType::Raydium,
+                                liquidity: price_data.liquidity,
+                                market_cap: 0.0,
+                                pool_address: Some(pool_address.to_string()),
+                                volume_24h: None,
+                                volume_6h: None,
+                                volume_1h: None,
+                                volume_5m: None,
+                            };
 
-        // First verify we can read the known pool correctly
-        match rpc_client.get_account_data(&known_pool) {
-            Ok(data) => {
-                tracing::info!("Successfully fetched known pool data, size: {}", data.len());
-
-                // Dump data in chunks
-                for i in (0..data.len()).step_by(32) {
-                    let end = std::cmp::min(i + 32, data.len());
-                    tracing::info!("Bytes {}-{}: {:?}", i, end, &data[i..end]);
-                }
-
-                // Let's also try to get the account info
-                if let Ok(account) = rpc_client.get_account(&known_pool) {
-                    tracing::info!("Account owner: {}", account.owner);
-                }
-
-                // Try alternate offsets for mint
-                let potential_offsets = [232, 264, 368, 400, 464, 496, 576, 608];
-                for offset in potential_offsets {
-                    if offset + 32 <= data.len() {
-                        let mut bytes = [0u8; 32];
-                        bytes.copy_from_slice(&data[offset..offset + 32]);
-                        let pubkey = Pubkey::new_from_array(bytes);
-                        tracing::info!("Potential pubkey at offset {}: {}", offset, pubkey);
-                    }
-                }
-
-                match RaydiumPool::from_account_data(&known_pool, &data) {
-                    Ok(pool) => {
-                        tracing::info!("Pool parsed successfully");
-                        tracing::info!("Debug string: {}", pool.to_debug_string());
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to parse pool data: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to fetch pool data: {}", e);
-            }
-        }
-
-        for token_mint in token_addresses {
-            let token_pubkey = Pubkey::from_str(token_mint)?;
-
-            tracing::info!("Searching for pool with token: {}", token_mint);
-
-            // Log the actual bytes we're searching for
-            tracing::info!("Token bytes (base58): {}", token_pubkey.to_string());
-            tracing::info!("Token raw bytes: {:?}", token_pubkey.to_bytes());
-
-            let token_bytes = token_pubkey.to_bytes();
-            if let Ok(data) = rpc_client.get_account_data(&known_pool) {
-                let positions = Self::find_token_in_data(&data, &token_bytes).await;
-                tracing::info!("Found token bytes at offsets: {:?}", positions);
-            }
-
-            // Try both base and quote mint positions
-            for (position, offset) in [("base", 432), ("quote", 400)] {
-                let memcmp = Memcmp::new(432, MemcmpEncodedBytes::Base58(token_pubkey.to_string()));
-
-                let filters = vec![RpcFilterType::DataSize(752), RpcFilterType::Memcmp(memcmp)];
-
-                let config = solana_client::rpc_config::RpcProgramAccountsConfig {
-                    filters: Some(filters),
-                    sort_results: Some(true),
-                    account_config: solana_client::rpc_config::RpcAccountInfoConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        commitment: Some(CommitmentConfig::confirmed()),
-                        ..Default::default()
-                    },
-                    with_context: Some(true),
-                };
-
-                tracing::info!("Querying for {} mint at offset {}", position, offset);
-                match rpc_client.get_program_accounts_with_config(&program_id, config) {
-                    Ok(accounts) => {
-                        tracing::info!(
-                            "Found {} accounts for {} position",
-                            accounts.len(),
-                            position
-                        );
-                        for (pubkey, account) in accounts {
-                            tracing::info!("Examining account: {}", pubkey);
-                            if let Ok(pool) = RaydiumPool::from_account_data(&pubkey, &account.data)
-                            {
-                                tracing::info!(
-                                    "Pool parsed successfully. Base mint: {}, Quote mint: {}",
-                                    pool.base_mint,
-                                    pool.quote_mint
-                                );
-                                // Rest of the price processing code...
-                                if let Ok(price_data) = pool.fetch_price_data(rpc_client).await {
-                                    let update = PriceUpdate {
-                                        token_address: token_mint.to_string(),
-                                        price_sol: price_data.price_sol,
-                                        timestamp: chrono::Utc::now().timestamp(),
-                                        dex_type: trading_common::dex::DexType::Raydium,
-                                        liquidity: price_data.liquidity,
-                                        market_cap: price_data.market_cap,
-                                        volume_24h: price_data.volume_24h,
-                                        volume_6h: price_data.volume_6h,
-                                        volume_1h: price_data.volume_1h,
-                                        volume_5m: price_data.volume_5m,
-                                    };
-                                    if let Err(e) = price_tx.send(update) {
-                                        tracing::error!("Failed to send price update: {}", e);
-                                    }
-                                }
+                            if let Err(e) = price_tx.send(update) {
+                                tracing::error!("Failed to send price update: {}", e);
+                            } else {
+                                tracing::debug!("Successfully sent price update");
                             }
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to query {} mint accounts: {}", position, e);
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn add_pool(&mut self, pool_address: &str) -> Result<(), AppError> {
-        let pubkey = Pubkey::try_from(pool_address)
-            .map_err(|_| AppError::InvalidPoolAddress(pool_address.to_string()))?;
-
-        let pool = raydium::load_pool(&self.rpc_client, &pubkey).await?;
-        self.pools.push(pool);
-        Ok(())
-    }
-
-    pub async fn remove_pool(&mut self, pool_address: &str) {
-        self.pools
-            .retain(|pool| pool.address.to_string() != pool_address);
-    }
-
-    async fn get_pool_info(
-        &self,
-        token_address: &str,
-    ) -> Result<Option<RaydiumPoolInfo>, AppError> {
-        // Check cache first
-        if let Some(info) = self.pool_cache.read().get(token_address) {
-            return Ok(Some(info.clone()));
-        }
-
-        // Query Raydium API
-        let url = format!("https://api.raydium.io/v2/main/pool/{}", token_address);
-
-        let response = reqwest::Client::new()
-            .get(&url)
-            .header("User-Agent", "Mozilla/5.0")
-            .send()
-            .await
-            .map_err(|e| AppError::RequestError(format!("Failed to query Raydium API: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
-
-        let pool_info: RaydiumPoolInfo = response
-            .json()
-            .await
-            .map_err(|e| AppError::JsonParseError(format!("Failed to parse pool info: {}", e)))?;
-
-        // Cache the result
-        self.pool_cache
-            .write()
-            .insert(token_address.to_string(), pool_info.clone());
-
-        Ok(Some(pool_info))
-    }
-
-    async fn fetch_pool_prices(&self) -> Result<Vec<PriceUpdate>, AppError> {
-        let mut updates = Vec::new();
-
-        for pool in &self.pools {
-            match pool.fetch_price_data(&self.rpc_client).await {
-                Ok(price_data) => {
-                    updates.push(PriceUpdate {
-                        token_address: pool.base_mint.to_string(),
-                        price_sol: price_data.price_sol,
-                        timestamp: chrono::Utc::now().timestamp(),
-                        dex_type: trading_common::dex::DexType::Raydium,
-                        liquidity: price_data.liquidity,
-                        market_cap: price_data.market_cap,
-                        volume_24h: price_data.volume_24h,
-                        volume_6h: price_data.volume_6h,
-                        volume_1h: price_data.volume_1h,
-                        volume_5m: price_data.volume_5m,
-                    });
                 }
                 Err(e) => {
                     tracing::error!(
-                        "Failed to fetch price data for pool {}: {}",
-                        pool.address,
+                        "Failed to fetch account data for pool {}: {}",
+                        pool_address,
                         e
                     );
-                    continue;
                 }
             }
         }
 
-        Ok(updates)
+        Ok(())
     }
 
-    async fn find_token_in_data(data: &[u8], token_bytes: &[u8]) -> Vec<usize> {
-        let mut positions = Vec::new();
-        for i in 0..data.len() - 32 {
-            if &data[i..i + 32] == token_bytes {
-                positions.push(i);
+    pub async fn subscribe_token(
+        &self,
+        token_address: &str,
+        client_id: &str,
+    ) -> Result<(), AppError> {
+        let mut active_tokens = self.active_tokens.write().await;
+
+        if let Some(feed) = active_tokens.get_mut(token_address) {
+            feed.subscribers.insert(client_id.to_string());
+            return Ok(());
+        }
+
+        // Find Raydium pool for token
+        let pool_address = self.find_raydium_pool(token_address).await?;
+
+        active_tokens.insert(
+            token_address.to_string(),
+            ActiveTokenFeed {
+                pool_address,
+                last_update: Utc::now(),
+                subscribers: HashSet::from([client_id.to_string()]),
+            },
+        );
+
+        Ok(())
+    }
+
+    pub async fn unsubscribe_token(&self, token_address: &str, client_id: &str) {
+        let mut active_tokens = self.active_tokens.write().await;
+
+        if let Some(feed) = active_tokens.get_mut(token_address) {
+            feed.subscribers.remove(client_id);
+
+            // Remove feed if no subscribers
+            if feed.subscribers.is_empty() {
+                active_tokens.remove(token_address);
             }
         }
-        positions
+    }
+
+    async fn find_raydium_pool(&self, token_address: &str) -> Result<Pubkey, AppError> {
+        let token_pubkey = Pubkey::from_str(token_address)
+            .map_err(|_| AppError::InvalidPoolAddress(token_address.to_string()))?;
+
+        // Search for pool with token as base mint
+        let memcmp = Memcmp::new(432, MemcmpEncodedBytes::Base58(token_pubkey.to_string()));
+        let filters = vec![RpcFilterType::DataSize(752), RpcFilterType::Memcmp(memcmp)];
+
+        let config = RpcProgramAccountsConfig {
+            filters: Some(filters),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                commitment: Some(CommitmentConfig::confirmed()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let accounts = self
+            .rpc_client
+            .get_program_accounts_with_config(&Pubkey::from_str(RAYDIUM_V4)?, config)
+            .map_err(|e| AppError::SolanaRpcError { source: e })?;
+
+        // Find first valid pool
+        for (pubkey, account) in accounts {
+            if let Ok(pool) = RaydiumPool::from_account_data(&pubkey, &account.data) {
+                if pool.base_mint == token_pubkey {
+                    return Ok(pubkey);
+                }
+            }
+        }
+
+        Err(AppError::PoolNotFound(token_address.to_string()))
     }
 }

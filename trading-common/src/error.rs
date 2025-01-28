@@ -128,6 +128,9 @@ pub enum AppError {
 
     #[error("Serialization error: {0}")]
     SerializationError(#[from] borsh::io::Error),
+
+    #[error("Pool not found: {0}")]
+    PoolNotFound(String),
 }
 
 impl AppError {
@@ -206,6 +209,7 @@ impl IntoResponse for AppError {
             AppError::InvalidPoolAddress(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::SubscriptionError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::SerializationError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::PoolNotFound(err) => (StatusCode::BAD_REQUEST, err.to_string()),
         };
 
         let body = serde_json::json!({

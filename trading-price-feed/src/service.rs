@@ -61,18 +61,21 @@ impl PriceFeedService {
 
         // Start monitoring pools
         let mut pool_monitor = self.pool_monitor.write().await;
-        pool_monitor.start_monitoring().await?;
 
-        // Subscribe to price updates from pool monitor
-        let mut price_updates = pool_monitor.subscribe_to_updates();
+        pool_monitor.start_monitoring().await?;
 
         // Start processing price updates
         tokio::spawn({
             let event_system = self.event_system.clone();
             let price_cache = self.price_cache.clone();
+            let pool_monitor = self.pool_monitor.clone();
             let mut redis = self.redis_connection.clone();
 
             async move {
+                let pool_monitor = pool_monitor.write().await;
+                let mut price_updates = pool_monitor.subscribe_to_updates().await;
+                drop(pool_monitor);
+
                 while let Some(price_update) = price_updates.next().await {
                     // Update cache
                     price_cache.write().update(price_update.clone());

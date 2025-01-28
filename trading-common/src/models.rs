@@ -328,6 +328,7 @@ pub struct PriceUpdate {
     pub dex_type: DexType,
     pub liquidity: f64,
     pub market_cap: f64,
+    pub pool_address: Option<String>,
     pub volume_24h: Option<f64>,
     pub volume_6h: Option<f64>,
     pub volume_1h: Option<f64>,

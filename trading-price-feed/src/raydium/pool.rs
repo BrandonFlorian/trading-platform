@@ -1,10 +1,9 @@
-use borsh::{BorshDeserialize, BorshSerialize};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::{str::FromStr, sync::Arc};
 use trading_common::error::AppError;
 
-use super::{calculate_liquidity, calculate_price, types::PoolState, PriceData};
+use super::PriceData;
 
 #[derive(Debug, Clone)]
 pub struct RaydiumPool {
@@ -101,26 +100,25 @@ impl RaydiumPool {
             self.quote_decimals
         );
 
-        let price = calculate_price(
-            base_balance.amount.parse().unwrap_or(0),
-            self.base_decimals,
-            quote_balance.amount.parse().unwrap_or(0),
-            self.quote_decimals,
-        );
+        let base_amount = base_balance.amount.parse::<u64>().unwrap_or(0) as f64
+            / 10f64.powi(self.base_decimals as i32);
+        let quote_amount = quote_balance.amount.parse::<u64>().unwrap_or(0) as f64
+            / 10f64.powi(self.quote_decimals as i32);
 
-        tracing::info!("Calculated price: {}", price);
+        let price_sol = if base_amount > 0.0 {
+            quote_amount / base_amount
+        } else {
+            0.0
+        };
 
-        let liquidity = calculate_liquidity(
-            base_balance.amount.parse().unwrap_or(0),
-            self.base_decimals,
-            quote_balance.amount.parse().unwrap_or(0),
-            self.quote_decimals,
-        );
+        tracing::info!("Calculated price in sol: {}", price_sol);
+
+        let liquidity = quote_amount * 2.0;
 
         tracing::info!("Calculated liquidity: {}", liquidity);
 
         Ok(PriceData {
-            price_sol: price,
+            price_sol,
             liquidity,
             market_cap: 0.0,
             volume_24h: None,
@@ -128,17 +126,5 @@ impl RaydiumPool {
             volume_1h: None,
             volume_5m: None,
         })
-    }
-
-    pub fn to_debug_string(&self) -> String {
-        format!(
-            "Pool {} - Token Mint: {}, Base Vault: {}, Quote Vault: {}, Base Decimals: {}, Quote Decimals: {}",
-            self.address,
-            self.base_mint,
-            self.base_vault,
-            self.quote_vault,
-            self.base_decimals,
-            self.quote_decimals
-        )
     }
 }
