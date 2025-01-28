@@ -321,6 +321,27 @@ impl ConnectionStatusChange {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceUpdate {
+    pub token_address: String,
+    pub price_sol: f64,
+    pub timestamp: i64,
+    pub dex_type: DexType,
+    pub liquidity: f64,
+    pub market_cap: f64,
+    pub volume_24h: Option<f64>,
+    pub volume_6h: Option<f64>,
+    pub volume_1h: Option<f64>,
+    pub volume_5m: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceUpdateNotification {
+    pub data: PriceUpdate,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionStatusNotification {
     pub data: ConnectionStatusChange,
     #[serde(rename = "type")]

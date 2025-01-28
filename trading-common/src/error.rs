@@ -8,6 +8,9 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 #[derive(Error, Debug)]
 pub enum AppError {
+    #[error("{0}")]
+    Generic(String),
+
     #[error("Database error: {0}")]
     DatabaseError(String),
 
@@ -117,8 +120,14 @@ pub enum AppError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    #[error("{0}")]
-    Generic(String),
+    #[error("Invalid pool address: {0}")]
+    InvalidPoolAddress(String),
+
+    #[error("Subscription failed: {0}")]
+    SubscriptionError(String),
+
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] borsh::io::Error),
 }
 
 impl AppError {
@@ -156,10 +165,10 @@ impl IntoResponse for AppError {
         let (status, error_message) = match self {
             AppError::DatabaseError(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            AppError::ConfigError(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             AppError::PostgrestError(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             AppError::JsonParseError(message) => (StatusCode::BAD_REQUEST, message),
             AppError::RequestError(message) => (StatusCode::BAD_REQUEST, message),
-            AppError::ConfigError(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             AppError::ServerError(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             AppError::PortParseError(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             AppError::SurfError(err) => (StatusCode::BAD_GATEWAY, err),
@@ -194,6 +203,9 @@ impl IntoResponse for AppError {
                 format!("{} - {}", service, details),
             ),
             AppError::TradeExecutionError { details, source } => (StatusCode::BAD_REQUEST, details),
+            AppError::InvalidPoolAddress(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::SubscriptionError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::SerializationError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
         };
 
         let body = serde_json::json!({

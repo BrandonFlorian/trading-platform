@@ -1,21 +1,21 @@
 use crate::{
+    constants::{PRICE_UPDATES_CHANNEL, SETTINGS_CHANNEL, TRACKED_WALLETS_CHANNEL},
     error::AppError,
     event_system::{Event, EventSystem},
     models::{
-        ConnectionStatus, ConnectionType, CopyTradeSettings, SettingsUpdateNotification,
-        WalletStateChange, WalletStateChangeType, WalletStateNotification,
+        ConnectionStatus, ConnectionType, CopyTradeSettings, PriceUpdate, PriceUpdateNotification,
+        SettingsUpdateNotification, WalletStateChange, WalletStateChangeType,
+        WalletStateNotification,
     },
     ConnectionMonitor, TrackedWallet,
 };
 use redis::AsyncConnectionConfig;
-use redis::{aio::ConnectionManager, AsyncCommands, Client};
+use redis::{aio::ConnectionManager, AsyncCommands};
 use serde_json::{self, json};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-const SETTINGS_CHANNEL: &str = "copy_trade_settings";
-const TRACKED_WALLETS_CHANNEL: &str = "tracked_wallets";
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRIES: u32 = 5;
 
@@ -248,7 +248,11 @@ impl RedisConnection {
             .map_err(|e| AppError::Generic(format!("Failed to create connection: {}", e)))?;
 
         // Subscribe to both channels
-        for channel in [SETTINGS_CHANNEL, TRACKED_WALLETS_CHANNEL] {
+        for channel in [
+            SETTINGS_CHANNEL,
+            TRACKED_WALLETS_CHANNEL,
+            PRICE_UPDATES_CHANNEL,
+        ] {
             println!("Subscribing to channel: {}", channel);
             con.subscribe(channel)
                 .await
@@ -342,6 +346,25 @@ impl RedisConnection {
                                             println!("Failed to deserialize tracked wallet update");
                                         }
                                     }
+                                    PRICE_UPDATES_CHANNEL => {
+                                        println!("Processing price update");
+                                        if let Ok(price_update) =
+                                            serde_json::from_str::<PriceUpdate>(&payload)
+                                        {
+                                            println!(
+                                                "Successfully deserialized price update for token: {}",
+                                                price_update.token_address
+                                            );
+                                            event_system.emit(Event::PriceUpdate(
+                                                PriceUpdateNotification {
+                                                    data: price_update,
+                                                    type_: "price_update".to_string(),
+                                                },
+                                            ));
+                                        } else {
+                                            println!("Failed to deserialize price update");
+                                        }
+                                    }
                                     _ => {
                                         println!("Unknown channel: {}", channel);
                                     }
@@ -393,6 +416,50 @@ impl RedisConnection {
                     "Redis health check failed: {}",
                     e
                 )))
+            }
+        }
+    }
+
+    pub async fn publish_price_update(
+        &mut self,
+        price_update: &PriceUpdate,
+    ) -> Result<(), AppError> {
+        println!(
+            "Publishing price update for token: {}",
+            price_update.token_address
+        );
+
+        let msg = serde_json::to_string(price_update)
+            .map_err(|e| AppError::Generic(format!("Failed to serialize price update: {}", e)))?;
+
+        let mut retries = 0;
+        loop {
+            match self
+                .connection
+                .publish::<_, _, i32>(PRICE_UPDATES_CHANNEL, msg.clone())
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if retries >= MAX_RETRIES {
+                        self.connection_monitor
+                            .update_status(
+                                ConnectionType::Redis,
+                                ConnectionStatus::Error,
+                                Some(format!(
+                                    "Failed to publish price update after {} retries: {}",
+                                    MAX_RETRIES, e
+                                )),
+                            )
+                            .await;
+                        return Err(AppError::RedisError(format!(
+                            "Failed to publish price update after {} retries: {}",
+                            MAX_RETRIES, e
+                        )));
+                    }
+                    retries += 1;
+                    tokio::time::sleep(RECONNECT_DELAY).await;
+                }
             }
         }
     }

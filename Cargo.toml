@@ -4,6 +4,7 @@ members = [
     "trading-api",
     "trading-bot",
     "trading-wallet",
+    "trading-price-feed",
 ]
 resolver = "2"
 [workspace.dependencies]
