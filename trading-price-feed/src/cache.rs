@@ -25,12 +25,6 @@ impl PriceCache {
     pub fn get_all_prices(&self) -> Vec<PriceUpdate> {
         self.prices.values().cloned().collect()
     }
-
-    pub fn clear_stale_prices(&mut self, max_age_secs: i64) {
-        let now = Utc::now().timestamp();
-        self.prices
-            .retain(|_, price| now - price.timestamp <= max_age_secs);
-    }
 }
 
 impl Default for PriceCache {

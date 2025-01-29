@@ -30,6 +30,7 @@ async fn main() -> Result<()> {
 
     // Create event system
     let event_system = Arc::new(EventSystem::new());
+    //let _event_rx = event_system.subscribe();
 
     // Create connection monitor
     let connection_monitor = Arc::new(ConnectionMonitor::new(event_system.clone()));

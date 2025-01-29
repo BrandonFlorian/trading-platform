@@ -324,9 +324,11 @@ impl ConnectionStatusChange {
 pub struct PriceUpdate {
     pub token_address: String,
     pub price_sol: f64,
+    pub price_usd: Option<f64>,
     pub timestamp: i64,
     pub dex_type: DexType,
     pub liquidity: f64,
+    pub liquidity_usd: Option<f64>,
     pub market_cap: f64,
     pub pool_address: Option<String>,
     pub volume_24h: Option<f64>,

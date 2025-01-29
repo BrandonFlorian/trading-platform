@@ -1,5 +1,5 @@
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
+use solana_sdk::{program_pack::Pack, pubkey::Pubkey};
 use std::{str::FromStr, sync::Arc};
 use trading_common::error::AppError;
 
@@ -89,42 +89,92 @@ impl RaydiumPool {
             .get_token_account_balance(&self.quote_vault)
             .map_err(|e| AppError::SolanaRpcError { source: e })?;
 
-        tracing::info!(
-            "Raw base balance: {}, decimals: {}",
-            base_balance.amount,
-            self.base_decimals
-        );
-        tracing::info!(
-            "Raw quote balance: {}, decimals: {}",
-            quote_balance.amount,
-            self.quote_decimals
-        );
+        // Convert string amounts to u64 before decimal adjustment
+        let base_raw = base_balance.amount.parse::<u64>().unwrap_or(0);
+        let quote_raw = quote_balance.amount.parse::<u64>().unwrap_or(0);
 
-        let base_amount = base_balance.amount.parse::<u64>().unwrap_or(0) as f64
-            / 10f64.powi(self.base_decimals as i32);
-        let quote_amount = quote_balance.amount.parse::<u64>().unwrap_or(0) as f64
-            / 10f64.powi(self.quote_decimals as i32);
+        // Check if this is the USDC/SOL pool
+        let is_usdc_pool = self.base_mint
+            == Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
 
-        let price_sol = if base_amount > 0.0 {
-            quote_amount / base_amount
+        if is_usdc_pool {
+            // For USDC/SOL pool
+            let sol_amount = base_raw as f64 / 10f64.powi(9); // SOL has 9 decimals
+            let usdc_amount = quote_raw as f64 / 10f64.powi(6); // USDC has 6 decimals
+
+            let price_sol = if sol_amount > 0.0 {
+                usdc_amount / sol_amount // This gives us USDC/SOL price
+            } else {
+                0.0
+            };
+
+            tracing::info!(
+                "Raw calculation - USDC amount: {}, SOL amount: {}",
+                usdc_amount,
+                sol_amount
+            );
+
+            // Calculate market cap (not relevant for USDC/SOL pool)
+            let market_cap = 0.0;
+
+            Ok(PriceData {
+                price_sol,
+                price_usd: Some(price_sol), // USDC price is the USD price
+                liquidity: sol_amount * 2.0,
+                liquidity_usd: None,
+                market_cap,
+                volume_24h: None,
+                volume_6h: None,
+                volume_1h: None,
+                volume_5m: None,
+            })
         } else {
-            0.0
-        };
+            // For other tokens
+            let base_amount = base_raw as f64 / 10f64.powi(self.base_decimals as i32);
+            let quote_amount = quote_raw as f64 / 10f64.powi(self.quote_decimals as i32);
 
-        tracing::info!("Calculated price in sol: {}", price_sol);
+            let price_sol = if base_amount > 0.0 {
+                quote_amount / base_amount * 1000.0
+            } else {
+                0.0
+            };
 
-        let liquidity = quote_amount * 2.0;
+            let liquidity_sol = quote_amount * 0.2; // Changed from 2.0 to 0.2 to match Photon's calculation
 
-        tracing::info!("Calculated liquidity: {}", liquidity);
+            // Get total supply for market cap calculation
+            let market_cap = if let Ok(mint_account) = rpc_client.get_account(&self.base_mint) {
+                if let Ok(mint_data) = spl_token::state::Mint::unpack(&mint_account.data) {
+                    let total_supply =
+                        mint_data.supply as f64 / 10f64.powi(mint_data.decimals as i32);
+                    total_supply * price_sol // This will be in SOL terms
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
 
-        Ok(PriceData {
-            price_sol,
-            liquidity,
-            market_cap: 0.0,
-            volume_24h: None,
-            volume_6h: None,
-            volume_1h: None,
-            volume_5m: None,
-        })
+            tracing::info!(
+                "Raw calculation - Base amount: {}, Quote amount: {}",
+                base_amount,
+                quote_amount
+            );
+
+            Ok(PriceData {
+                price_sol,
+                price_usd: None,
+                liquidity: liquidity_sol,
+                liquidity_usd: None,
+                market_cap,
+                volume_24h: None,
+                volume_6h: None,
+                volume_1h: None,
+                volume_5m: None,
+            })
+        }
+    }
+
+    pub fn is_usdc_pool(&self) -> bool {
+        self.base_mint == Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap()
     }
 }

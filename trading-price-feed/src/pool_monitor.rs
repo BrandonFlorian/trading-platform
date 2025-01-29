@@ -1,4 +1,7 @@
-use crate::{config::PriceFeedConfig, raydium::RaydiumPool};
+use crate::{
+    config::PriceFeedConfig,
+    raydium::{RaydiumPool, UsdcSolPool},
+};
 use chrono::{DateTime, Utc};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
@@ -6,11 +9,14 @@ use solana_client::{
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
+use solana_sdk::{commitment_config::CommitmentConfig, program_pack::Pack, pubkey::Pubkey};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 use tokio::sync::RwLock;
 use tokio::sync::{broadcast, mpsc};
@@ -37,6 +43,15 @@ pub struct PoolMonitor {
     stop_sender: Option<mpsc::Sender<()>>,
     config: PriceFeedConfig,
     active_tokens: Arc<RwLock<HashMap<String, ActiveTokenFeed>>>,
+    //usdc_sol_pool: Arc<RwLock<UsdcSolPool>>,
+    //usdc_sol_initialized: AtomicBool,
+    usdc_sol_state: UsdcSolState,
+}
+
+#[derive(Clone)]
+struct UsdcSolState {
+    pool: Arc<RwLock<UsdcSolPool>>,
+    initialized: Arc<AtomicBool>,
 }
 
 impl PoolMonitor {
@@ -46,6 +61,17 @@ impl PoolMonitor {
         connection_monitor: Arc<ConnectionMonitor>,
         config: PriceFeedConfig,
     ) -> Self {
+        let usdc_sol_pool = UsdcSolPool::new(
+            "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "So11111111111111111111111111111111111111112",
+        )
+        .expect("Failed to create USDC/SOL pool");
+
+        let usdc_sol_state = UsdcSolState {
+            pool: Arc::new(RwLock::new(usdc_sol_pool)),
+            initialized: Arc::new(AtomicBool::new(false)),
+        };
         Self {
             rpc_client,
             event_system,
@@ -54,6 +80,9 @@ impl PoolMonitor {
             stop_sender: None,
             config,
             active_tokens: Arc::new(RwLock::new(HashMap::new())),
+            // usdc_sol_pool: Arc::new(RwLock::new(usdc_sol_pool)),
+            // usdc_sol_initialized: AtomicBool::new(false),
+            usdc_sol_state,
         }
     }
 
@@ -70,6 +99,7 @@ impl PoolMonitor {
         let connection_monitor = Arc::clone(&self.connection_monitor);
         let price_tx = price_tx.clone();
         let active_tokens = Arc::clone(&self.active_tokens);
+        let usdc_sol_state = self.usdc_sol_state.clone();
 
         tokio::spawn({
             let connection_monitor = connection_monitor.clone();
@@ -87,6 +117,7 @@ impl PoolMonitor {
                                 &rpc_client,
                                 &price_tx,
                                 &active_tokens,
+                                &usdc_sol_state,
                             ).await {
                                 tracing::error!("Failed to update pool prices: {}", e);
                                 connection_monitor
@@ -137,11 +168,54 @@ impl PoolMonitor {
         rpc_client: &Arc<RpcClient>,
         price_tx: &broadcast::Sender<PriceUpdate>,
         active_tokens: &Arc<RwLock<HashMap<String, ActiveTokenFeed>>>,
+        usdc_sol_state: &UsdcSolState,
     ) -> Result<(), AppError> {
+        // First get USDC/SOL price
+        let sol_price = {
+            let pool_address = usdc_sol_state.pool.read().await.address;
+            tracing::debug!("Fetching USDC/SOL pool data from address: {}", pool_address);
+
+            let account = rpc_client.get_account(&pool_address)?;
+            tracing::debug!("Got account data of length: {}", account.data.len());
+
+            match RaydiumPool::from_account_data(&pool_address, &account.data) {
+                Ok(pool) => {
+                    tracing::debug!("Successfully parsed USDC/SOL pool");
+                    match pool.fetch_price_data(rpc_client).await {
+                        Ok(price_data) => {
+                            tracing::debug!("Got USDC/SOL price data: {:?}", price_data);
+                            let mut usdc_pool = usdc_sol_state.pool.write().await;
+                            usdc_pool.last_sol_price = price_data.price_sol;
+                            usdc_pool.last_update = chrono::Utc::now();
+                            usdc_sol_state.initialized.store(true, Ordering::SeqCst);
+                            tracing::info!(
+                                "Updated USDC/SOL price to: {}",
+                                usdc_pool.last_sol_price
+                            );
+                            usdc_pool.last_sol_price
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to get USDC/SOL price data: {}", e);
+                            return Err(AppError::PriceNotAvailable(format!(
+                                "USDC/SOL price data: {}",
+                                e
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to parse USDC/SOL pool data: {}", e);
+                    return Err(AppError::PriceNotAvailable(format!(
+                        "USDC/SOL pool parse failed: {}",
+                        e
+                    )));
+                }
+            }
+        };
+
         // Take a snapshot of the current active tokens
         let tokens: Vec<(String, Pubkey)> = {
             let active_tokens = active_tokens.read().await;
-            tracing::debug!("Active tokens: {}", active_tokens.len());
             active_tokens
                 .iter()
                 .map(|(addr, feed)| (addr.clone(), feed.pool_address))
@@ -149,31 +223,52 @@ impl PoolMonitor {
         };
 
         for (token_address, pool_address) in tokens {
-            tracing::debug!("Fetching price for token: {}", token_address);
             match rpc_client.get_account(&pool_address) {
                 Ok(account) => {
-                    tracing::debug!("Got account data for pool: {}", pool_address);
                     if let Ok(pool) = RaydiumPool::from_account_data(&pool_address, &account.data) {
-                        if let Ok(price_data) = pool.fetch_price_data(rpc_client).await {
-                            tracing::debug!("Price data: {:?}", price_data);
+                        if let Ok(mut price_data) = pool.fetch_price_data(rpc_client).await {
+                            // Calculate USD values using SOL price
+                            if !pool.is_usdc_pool() {
+                                price_data.price_usd = Some(price_data.price_sol * sol_price);
+                                price_data.market_cap *= sol_price;
+                                price_data.liquidity_usd = Some(price_data.liquidity * sol_price); // Convert liquidity to USD
+
+                                tracing::info!(
+                                    "SOL price: {}, Token price in SOL: {}, Token price in USD: {}",
+                                    sol_price,
+                                    price_data.price_sol,
+                                    price_data.price_usd.unwrap_or(0.0)
+                                );
+                                tracing::info!(
+                                    "Market cap in SOL: {}, Market cap in USD: {}",
+                                    price_data.market_cap / sol_price,
+                                    price_data.market_cap
+                                );
+                                tracing::info!(
+                                    "Liquidity in SOL: {}, Liquidity in USD: {}",
+                                    price_data.liquidity,
+                                    price_data.liquidity_usd.unwrap_or(0.0)
+                                );
+                            }
+
                             let update = PriceUpdate {
                                 token_address: token_address.clone(),
                                 price_sol: price_data.price_sol,
+                                price_usd: price_data.price_usd,
+                                market_cap: price_data.market_cap,
                                 timestamp: Utc::now().timestamp(),
                                 dex_type: DexType::Raydium,
                                 liquidity: price_data.liquidity,
-                                market_cap: 0.0,
+                                liquidity_usd: price_data.liquidity_usd,
                                 pool_address: Some(pool_address.to_string()),
-                                volume_24h: None,
-                                volume_6h: None,
-                                volume_1h: None,
-                                volume_5m: None,
+                                volume_24h: price_data.volume_24h,
+                                volume_6h: price_data.volume_6h,
+                                volume_1h: price_data.volume_1h,
+                                volume_5m: price_data.volume_5m,
                             };
 
                             if let Err(e) = price_tx.send(update) {
                                 tracing::error!("Failed to send price update: {}", e);
-                            } else {
-                                tracing::debug!("Successfully sent price update");
                             }
                         }
                     }

@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_sdk::pubkey::Pubkey;
 
@@ -53,10 +55,37 @@ pub struct PoolState {
 #[derive(Debug, Clone)]
 pub struct PriceData {
     pub price_sol: f64,
+    pub price_usd: Option<f64>,
     pub liquidity: f64,
+    pub liquidity_usd: Option<f64>,
     pub market_cap: f64,
     pub volume_24h: Option<f64>,
     pub volume_6h: Option<f64>,
     pub volume_1h: Option<f64>,
     pub volume_5m: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UsdcSolPool {
+    pub address: Pubkey,
+    pub usdc_mint: Pubkey,
+    pub sol_mint: Pubkey,
+    pub last_sol_price: f64,
+    pub last_update: chrono::DateTime<chrono::Utc>,
+}
+
+impl UsdcSolPool {
+    pub fn new(
+        address: &str,
+        usdc_mint: &str,
+        sol_mint: &str,
+    ) -> Result<Self, trading_common::error::AppError> {
+        Ok(Self {
+            address: Pubkey::from_str(address)?,
+            usdc_mint: Pubkey::from_str(usdc_mint)?,
+            sol_mint: Pubkey::from_str(sol_mint)?,
+            last_sol_price: 0.0,
+            last_update: chrono::Utc::now(),
+        })
+    }
 }

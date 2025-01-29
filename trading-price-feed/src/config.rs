@@ -42,19 +42,8 @@ impl PriceFeedConfig {
         self
     }
 
-    pub fn with_token_addresses(mut self, addresses: Vec<String>) -> Self {
-        self.token_addresses = addresses;
-        self
-    }
-
     pub fn with_cache_duration(mut self, duration: Duration) -> Self {
         self.cache_duration = duration;
-        self
-    }
-
-    pub fn with_retry_settings(mut self, interval: Duration, max_retries: u32) -> Self {
-        self.retry_interval = interval;
-        self.max_retries = max_retries;
         self
     }
 }
