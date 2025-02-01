@@ -63,11 +63,6 @@ impl RaydiumPool {
             &data[368..400]
         );
 
-        // Base decimals is at offset 40 (48-8 for discriminator)
-        let base_decimals = u64::from_le_bytes(data[40..48].try_into().unwrap()) as u8;
-
-        // Quote decimals is at offset 48 (56-8 for discriminator)
-        let quote_decimals = u64::from_le_bytes(data[48..56].try_into().unwrap()) as u8;
         let base_mint = {
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data[432 - 8..464 - 8]); // Subtract 8 for discriminator
@@ -91,7 +86,8 @@ impl RaydiumPool {
         };
 
         // Get base decimals from mint account
-        let base_decimals = 10; // Hardcode for now while we verify
+        let base_decimals = 6; // todo: get from mint account
+
         let quote_decimals = 9; // SOL always has 9 decimals
 
         tracing::info!("Parsed base mint: {}", base_mint);
@@ -169,12 +165,24 @@ impl RaydiumPool {
             // For other tokens
             let base_amount = base_raw as f64;
             let quote_amount = quote_raw as f64;
+            let base_decimals = if let Ok(mint_account) = rpc_client.get_account(&self.base_mint) {
+                if let Ok(mint_data) = spl_token::state::Mint::unpack(&mint_account.data) {
+                    tracing::info!("Base decimals: {}", mint_data.decimals);
+                    mint_data.decimals
+                } else {
+                    tracing::error!("Failed to read mint data");
+                    6 // Default to 6 if can't read
+                }
+            } else {
+                tracing::error!("Failed to read mint account");
+                6
+            };
 
             // Calculate price by dividing raw amounts first
             let price_sol = if base_amount > 0.0 {
                 let raw_price = base_amount / quote_amount;
                 let decimal_adjustment =
-                    10f64.powi(self.quote_decimals as i32 - self.base_decimals as i32 - 2);
+                    10f64.powi(self.quote_decimals as i32 - base_decimals as i32 * 2);
 
                 tracing::info!(
                     "Price calculation: raw_price={}, decimal_adjustment={}, final_price={}",
@@ -213,13 +221,11 @@ impl RaydiumPool {
                         price_sol,
                         sol_price_usd,
                         real_supply * price_sol * sol_price_usd,
-                        raw_supply / 10f64.powi(self.base_decimals as i32 - 4)
+                        raw_supply / 10f64.powi(self.base_decimals as i32)
                     );
 
                     // Use decimal adjusted supply
-                    (raw_supply / 10f64.powi(self.base_decimals as i32 - 4))
-                        * price_sol
-                        * sol_price_usd
+                    (raw_supply / 10f64.powi(self.base_decimals as i32)) * price_sol * sol_price_usd
                 } else {
                     0.0
                 }
