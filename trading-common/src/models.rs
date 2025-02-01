@@ -327,7 +327,7 @@ pub struct PriceUpdate {
     pub price_usd: Option<f64>,
     pub timestamp: i64,
     pub dex_type: DexType,
-    pub liquidity: f64,
+    pub liquidity: Option<f64>,
     pub liquidity_usd: Option<f64>,
     pub market_cap: f64,
     pub pool_address: Option<String>,
@@ -438,4 +438,25 @@ pub struct WatchlistWithTokens {
     pub tokens: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolPriceUpdate {
+    pub price_usd: f64,
+    pub source: PriceSource,
+    pub timestamp: i64,
+    pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PriceSource {
+    Pyth,
+    Raydium,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolPriceUpdateNotification {
+    pub data: SolPriceUpdate,
+    #[serde(rename = "type")]
+    pub type_: String,
 }

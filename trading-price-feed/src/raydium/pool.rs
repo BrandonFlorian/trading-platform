@@ -31,7 +31,43 @@ impl RaydiumPool {
         // Skip 8 byte discriminator
         let data = &data[8..];
 
-        // KENJ token is at offset 432
+        // Log potential scale factors and pool parameters
+        tracing::debug!("Pool data analysis:");
+
+        // Look for potential scale factors in first 100 bytes
+        tracing::debug!("First 100 bytes analysis:");
+        for i in (0..100).step_by(4) {
+            if i + 4 <= data.len() {
+                let value = u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
+                if value > 0 && value < 100 {
+                    tracing::debug!("Potential scale/decimal factor at offset {}: {}", i, value);
+                }
+            }
+        }
+
+        // Look for potential price scale factors in specific ranges
+        for i in (0..data.len()).step_by(8) {
+            if i + 8 <= data.len() {
+                let value = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+                if value > 0 && value < 1_000_000 {
+                    // Potential scale factor range
+                    tracing::debug!("Potential scale factor at offset {}: {} (u64)", i, value);
+                }
+            }
+        }
+
+        // Log the raw bytes around known offsets
+        tracing::debug!("Bytes at base mint offset (424-464): {:?}", &data[424..464]);
+        tracing::debug!(
+            "Bytes at quote mint offset (368-400): {:?}",
+            &data[368..400]
+        );
+
+        // Base decimals is at offset 40 (48-8 for discriminator)
+        let base_decimals = u64::from_le_bytes(data[40..48].try_into().unwrap()) as u8;
+
+        // Quote decimals is at offset 48 (56-8 for discriminator)
+        let quote_decimals = u64::from_le_bytes(data[48..56].try_into().unwrap()) as u8;
         let base_mint = {
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data[432 - 8..464 - 8]); // Subtract 8 for discriminator
@@ -54,8 +90,8 @@ impl RaydiumPool {
             Pubkey::new_from_array(bytes)
         };
 
-        // Decimals should be in first part
-        let base_decimals = u64::from_le_bytes(data[40..48].try_into().unwrap()) as u8;
+        // Get base decimals from mint account
+        let base_decimals = 10; // Hardcode for now while we verify
         let quote_decimals = 9; // SOL always has 9 decimals
 
         tracing::info!("Parsed base mint: {}", base_mint);
@@ -79,6 +115,7 @@ impl RaydiumPool {
     pub async fn fetch_price_data(
         &self,
         rpc_client: &Arc<RpcClient>,
+        sol_price_usd: f64,
     ) -> Result<PriceData, AppError> {
         // Get token account balances
         let base_balance = rpc_client
@@ -120,7 +157,7 @@ impl RaydiumPool {
             Ok(PriceData {
                 price_sol,
                 price_usd: Some(price_sol), // USDC price is the USD price
-                liquidity: sol_amount * 2.0,
+                liquidity: Some(sol_amount * 2.0),
                 liquidity_usd: None,
                 market_cap,
                 volume_24h: None,
@@ -130,23 +167,59 @@ impl RaydiumPool {
             })
         } else {
             // For other tokens
-            let base_amount = base_raw as f64 / 10f64.powi(self.base_decimals as i32);
-            let quote_amount = quote_raw as f64 / 10f64.powi(self.quote_decimals as i32);
+            let base_amount = base_raw as f64;
+            let quote_amount = quote_raw as f64;
 
+            // Calculate price by dividing raw amounts first
             let price_sol = if base_amount > 0.0 {
-                quote_amount / base_amount * 1000.0
+                let raw_price = base_amount / quote_amount;
+                let decimal_adjustment =
+                    10f64.powi(self.quote_decimals as i32 - self.base_decimals as i32 - 2);
+
+                tracing::info!(
+                    "Price calculation: raw_price={}, decimal_adjustment={}, final_price={}",
+                    raw_price,
+                    decimal_adjustment,
+                    raw_price * decimal_adjustment
+                );
+
+                raw_price * decimal_adjustment
             } else {
                 0.0
             };
 
-            let liquidity_sol = quote_amount * 0.2; // Changed from 2.0 to 0.2 to match Photon's calculation
+            // Adjust liquidity by decimals
+            let liquidity_sol = quote_amount / 10f64.powi(self.quote_decimals as i32);
 
             // Get total supply for market cap calculation
             let market_cap = if let Ok(mint_account) = rpc_client.get_account(&self.base_mint) {
                 if let Ok(mint_data) = spl_token::state::Mint::unpack(&mint_account.data) {
-                    let total_supply =
-                        mint_data.supply as f64 / 10f64.powi(mint_data.decimals as i32);
-                    total_supply * price_sol // This will be in SOL terms
+                    let raw_supply = mint_data.supply as f64;
+                    let real_supply = raw_supply / 10f64.powi(self.base_decimals as i32);
+
+                    tracing::info!(
+                        "Market cap detailed calculation:\n\
+                         raw_supply={}\n\
+                         base_decimals={}\n\
+                         real_supply={}\n\
+                         price_sol={}\n\
+                         sol_price_usd={}\n\
+                         raw_market_cap={}\n\
+                         expected_market_cap=~120M\n\
+                         decimal_adjusted_supply={}",
+                        raw_supply,
+                        self.base_decimals,
+                        real_supply,
+                        price_sol,
+                        sol_price_usd,
+                        real_supply * price_sol * sol_price_usd,
+                        raw_supply / 10f64.powi(self.base_decimals as i32 - 4)
+                    );
+
+                    // Use decimal adjusted supply
+                    (raw_supply / 10f64.powi(self.base_decimals as i32 - 4))
+                        * price_sol
+                        * sol_price_usd
                 } else {
                     0.0
                 }
@@ -155,15 +228,18 @@ impl RaydiumPool {
             };
 
             tracing::info!(
-                "Raw calculation - Base amount: {}, Quote amount: {}",
+                "Raw calculation - Base amount: {}, Quote amount: {}, Real base: {}, Real quote: {}, Price: {}",
                 base_amount,
-                quote_amount
+                quote_amount,
+                base_amount / 10f64.powi(self.base_decimals as i32),
+                quote_amount / 10f64.powi(self.quote_decimals as i32),
+                price_sol
             );
 
             Ok(PriceData {
                 price_sol,
                 price_usd: None,
-                liquidity: liquidity_sol,
+                liquidity: Some(liquidity_sol),
                 liquidity_usd: None,
                 market_cap,
                 volume_24h: None,
@@ -172,9 +248,5 @@ impl RaydiumPool {
                 volume_5m: None,
             })
         }
-    }
-
-    pub fn is_usdc_pool(&self) -> bool {
-        self.base_mint == Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap()
     }
 }

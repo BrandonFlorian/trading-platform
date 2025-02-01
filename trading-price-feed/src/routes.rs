@@ -1,3 +1,4 @@
+use crate::service::PriceFeedService;
 use axum::{
     extract::ws::{Message, WebSocket},
     extract::{Path, Query, State, WebSocketUpgrade},
@@ -6,13 +7,12 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use futures_util::SinkExt;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc};
-use uuid::Uuid;
-
-use crate::service::PriceFeedService;
 use trading_common::error::AppError;
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 pub struct SubscribeRequest {
@@ -83,52 +83,38 @@ pub async fn subscribe_price_feed(
 }
 
 async fn handle_socket(
-    mut socket: WebSocket,
+    socket: axum::extract::ws::WebSocket,
     service: Arc<PriceFeedService>,
     params: HashMap<String, String>,
 ) {
+    let (mut sender, _) = socket.split();
     let client_id = Uuid::new_v4().to_string();
 
-    // Get token from query params
     if let Some(token_addr) = params.get("token") {
-        // Subscribe to token price updates
-        if let Err(e) = service
-            .pool_monitor
-            .write()
-            .await
-            .subscribe_token(token_addr, &client_id)
-            .await
-        {
+        let pool_monitor = service.pool_monitor.write().await;
+        if let Err(e) = pool_monitor.subscribe_token(token_addr, &client_id).await {
             eprintln!("Failed to subscribe to token {}: {}", token_addr, e);
             return;
         }
 
-        let mut rx = {
-            let pool_monitor = service.pool_monitor.read().await;
-            pool_monitor.subscribe_to_updates().await
-        };
+        let mut rx = pool_monitor.subscribe_to_updates();
+        drop(pool_monitor); // Release lock early
 
-        // Send price updates to client
-        while let Some(update) = rx.next().await {
+        while let Ok(update) = rx.recv().await {
             let msg = serde_json::to_string(&update)
-                .map(|text| Message::Text(text.into()))
+                .map(|text| axum::extract::ws::Message::Text(text.into()))
                 .unwrap_or_else(|e| {
                     eprintln!("Failed to serialize price update: {}", e);
-                    Message::Close(None)
+                    axum::extract::ws::Message::Close(None)
                 });
 
-            if let Err(e) = socket.send(msg).await {
-                eprintln!("Failed to send price update: {}", e);
+            if sender.send(msg).await.is_err() {
                 break;
             }
         }
 
-        // Clean up subscription when connection closes
-        service
-            .pool_monitor
-            .write()
-            .await
-            .unsubscribe_token(token_addr, &client_id)
-            .await;
+        // Cleanup subscription
+        let pool_monitor = service.pool_monitor.write().await;
+        pool_monitor.unsubscribe_token(token_addr, &client_id).await;
     }
 }

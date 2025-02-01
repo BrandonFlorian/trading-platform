@@ -56,7 +56,7 @@ pub struct PoolState {
 pub struct PriceData {
     pub price_sol: f64,
     pub price_usd: Option<f64>,
-    pub liquidity: f64,
+    pub liquidity: Option<f64>,
     pub liquidity_usd: Option<f64>,
     pub market_cap: f64,
     pub volume_24h: Option<f64>,

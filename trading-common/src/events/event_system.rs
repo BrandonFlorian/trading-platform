@@ -5,9 +5,9 @@ use tokio::sync::broadcast;
 use crate::models::{
     ConnectionStatusNotification, CopyTradeNotification, DatabaseNotification,
     DatabaseOperationEvent, ErrorEvent, ErrorNotification, PriceUpdateNotification,
-    SettingsUpdateNotification, TrackedWalletNotification, TradeExecutionNotification,
-    TransactionLoggedNotification, TransactionStateNotification, WalletStateNotification,
-    WalletUpdateNotification,
+    SettingsUpdateNotification, SolPriceUpdateNotification, TrackedWalletNotification,
+    TradeExecutionNotification, TransactionLoggedNotification, TransactionStateNotification,
+    WalletStateNotification, WalletUpdateNotification,
 };
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,7 @@ pub enum Event {
     TradeExecution(TradeExecutionNotification),
     TransactionStateChange(TransactionStateNotification),
     PriceUpdate(PriceUpdateNotification),
+    SolPriceUpdate(SolPriceUpdateNotification),
 }
 pub struct EventSystem {
     sender: broadcast::Sender<Event>,
@@ -114,6 +115,16 @@ impl EventSystem {
     pub async fn handle_price_update(&self, notification: PriceUpdateNotification) {
         println!("Handling price update");
         self.emit(Event::PriceUpdate(notification));
+    }
+
+    pub async fn handle_sol_price_update(&self, notification: SolPriceUpdateNotification) {
+        println!("Handling SOL price update");
+        self.emit(Event::SolPriceUpdate(notification));
+    }
+
+    pub fn handle_connection_status(&self, notification: ConnectionStatusNotification) {
+        println!("Handling connection status");
+        self.emit(Event::ConnectionStatus(notification));
     }
 
     pub fn emit_db_event(
