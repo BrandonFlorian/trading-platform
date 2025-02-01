@@ -1,6 +1,5 @@
 use crate::service::PriceFeedService;
 use axum::{
-    extract::ws::{Message, WebSocket},
     extract::{Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Json},

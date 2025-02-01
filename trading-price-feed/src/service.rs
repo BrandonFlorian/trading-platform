@@ -2,7 +2,6 @@ use parking_lot::RwLock as ParkingLotRwLock;
 use solana_client::rpc_client::RpcClient;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio_stream::StreamExt;
 use trading_common::{
     error::AppError,
     event_system::{Event, EventSystem},
@@ -38,7 +37,7 @@ impl PriceFeedService {
             pool_monitor: Arc::new(RwLock::new(PoolMonitor::new(
                 rpc_client,
                 event_system.clone(),
-                redis_connection.clone(), // Clone the RedisConnection
+                redis_connection.clone(),
                 config.clone(),
             ))),
             price_cache: Arc::new(ParkingLotRwLock::new(PriceCache::new())),

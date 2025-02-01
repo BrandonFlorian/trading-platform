@@ -86,7 +86,7 @@ impl RaydiumPool {
         };
 
         // Get base decimals from mint account
-        let base_decimals = 6; // todo: get from mint account
+        let base_decimals = 6; // todo: FIX get from mint account
 
         let quote_decimals = 9; // SOL always has 9 decimals
 
