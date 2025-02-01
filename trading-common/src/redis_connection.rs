@@ -1,21 +1,25 @@
 use crate::{
+    constants::{PRICE_UPDATES_CHANNEL, SETTINGS_CHANNEL, TRACKED_WALLETS_CHANNEL},
     error::AppError,
     event_system::{Event, EventSystem},
     models::{
-        ConnectionStatus, ConnectionType, CopyTradeSettings, SettingsUpdateNotification,
-        WalletStateChange, WalletStateChangeType, WalletStateNotification,
+        ConnectionStatus, ConnectionType, CopyTradeSettings, PriceUpdate, PriceUpdateNotification,
+        SettingsUpdateNotification, SolPriceUpdate, SolPriceUpdateNotification, WalletStateChange,
+        WalletStateChangeType, WalletStateNotification,
     },
     ConnectionMonitor, TrackedWallet,
 };
+
 use redis::AsyncConnectionConfig;
-use redis::{aio::ConnectionManager, AsyncCommands, Client};
+use redis::{aio::ConnectionManager, AsyncCommands};
 use serde_json::{self, json};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::{
+    sync::{broadcast, mpsc},
+    time::Instant,
+};
 
-const SETTINGS_CHANNEL: &str = "copy_trade_settings";
-const TRACKED_WALLETS_CHANNEL: &str = "tracked_wallets";
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRIES: u32 = 5;
 
@@ -248,7 +252,11 @@ impl RedisConnection {
             .map_err(|e| AppError::Generic(format!("Failed to create connection: {}", e)))?;
 
         // Subscribe to both channels
-        for channel in [SETTINGS_CHANNEL, TRACKED_WALLETS_CHANNEL] {
+        for channel in [
+            SETTINGS_CHANNEL,
+            TRACKED_WALLETS_CHANNEL,
+            PRICE_UPDATES_CHANNEL,
+        ] {
             println!("Subscribing to channel: {}", channel);
             con.subscribe(channel)
                 .await
@@ -342,6 +350,25 @@ impl RedisConnection {
                                             println!("Failed to deserialize tracked wallet update");
                                         }
                                     }
+                                    PRICE_UPDATES_CHANNEL => {
+                                        println!("Processing price update");
+                                        if let Ok(price_update) =
+                                            serde_json::from_str::<PriceUpdate>(&payload)
+                                        {
+                                            println!(
+                                                "Successfully deserialized price update for token: {}",
+                                                price_update.token_address
+                                            );
+                                            event_system.emit(Event::PriceUpdate(
+                                                PriceUpdateNotification {
+                                                    data: price_update,
+                                                    type_: "price_update".to_string(),
+                                                },
+                                            ));
+                                        } else {
+                                            println!("Failed to deserialize price update");
+                                        }
+                                    }
                                     _ => {
                                         println!("Unknown channel: {}", channel);
                                     }
@@ -374,6 +401,65 @@ impl RedisConnection {
         Ok(())
     }
 
+    pub async fn subscribe_to_sol_price_updates(
+        redis_url: &str,
+        event_system: Arc<EventSystem>,
+    ) -> Result<(), AppError> {
+        let redis_url = if !redis_url.contains("protocol=resp3") {
+            if redis_url.contains('?') {
+                format!("{}&protocol=resp3", redis_url)
+            } else {
+                format!("{}?protocol=resp3", redis_url)
+            }
+        } else {
+            redis_url.to_string()
+        };
+
+        let client = redis::Client::open(redis_url)
+            .map_err(|e| AppError::Generic(format!("Failed to create Redis client: {}", e)))?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let config = redis::AsyncConnectionConfig::new().set_push_sender(tx);
+
+        println!("Establishing Redis connection for SOL price updates...");
+        let mut con = client
+            .get_multiplexed_async_connection_with_config(&config)
+            .await
+            .map_err(|e| AppError::Generic(format!("Failed to create connection: {}", e)))?;
+
+        // Subscribe to SOL price update channel
+        con.subscribe("sol_price_updates")
+            .await
+            .map_err(|e| AppError::Generic(format!("Failed to subscribe: {}", e)))?;
+
+        // Keep connection alive and process messages
+        tokio::spawn(async move {
+            println!("Starting SOL price update handler loop");
+            while let Some(push_info) = rx.recv().await {
+                match push_info.kind {
+                    redis::PushKind::Message if push_info.data.len() >= 2 => {
+                        if let Ok(payload) = redis::from_redis_value::<String>(&push_info.data[1]) {
+                            if let Ok(price_update) =
+                                serde_json::from_str::<SolPriceUpdate>(&payload)
+                            {
+                                event_system.emit(Event::SolPriceUpdate(
+                                    SolPriceUpdateNotification {
+                                        data: price_update,
+                                        type_: "sol_price_update".to_string(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+            println!("SOL price update handler ended");
+        });
+
+        Ok(())
+    }
+
     pub async fn is_healthy(&mut self) -> Result<bool, AppError> {
         println!("Checking Redis health");
         match redis::cmd("PING")
@@ -395,5 +481,155 @@ impl RedisConnection {
                 )))
             }
         }
+    }
+
+    pub async fn publish_price_update(
+        &mut self,
+        price_update: &PriceUpdate,
+    ) -> Result<(), AppError> {
+        println!(
+            "Publishing price update for token: {}",
+            price_update.token_address
+        );
+
+        let msg = serde_json::to_string(price_update)
+            .map_err(|e| AppError::Generic(format!("Failed to serialize price update: {}", e)))?;
+
+        let mut retries = 0;
+        loop {
+            match self
+                .connection
+                .publish::<_, _, i32>(PRICE_UPDATES_CHANNEL, msg.clone())
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if retries >= MAX_RETRIES {
+                        self.connection_monitor
+                            .update_status(
+                                ConnectionType::Redis,
+                                ConnectionStatus::Error,
+                                Some(format!(
+                                    "Failed to publish price update after {} retries: {}",
+                                    MAX_RETRIES, e
+                                )),
+                            )
+                            .await;
+                        return Err(AppError::RedisError(format!(
+                            "Failed to publish price update after {} retries: {}",
+                            MAX_RETRIES, e
+                        )));
+                    }
+                    retries += 1;
+                    tokio::time::sleep(RECONNECT_DELAY).await;
+                }
+            }
+        }
+    }
+
+    pub async fn publish_sol_price_update(
+        &mut self,
+        price_update: &SolPriceUpdate,
+    ) -> Result<(), AppError> {
+        let channel = "sol_price_updates";
+        let msg = serde_json::to_string(&price_update).map_err(|e| {
+            AppError::JsonParseError(format!("Failed to serialize price update: {}", e))
+        })?;
+
+        let mut retries = 0;
+        const MAX_RETRIES: u32 = 3;
+
+        loop {
+            match self
+                .connection
+                .publish::<_, _, i32>(channel, msg.clone())
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if retries >= MAX_RETRIES {
+                        return Err(AppError::RedisError(format!(
+                            "Failed to publish SOL price update after {} retries: {}",
+                            MAX_RETRIES, e
+                        )));
+                    }
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+
+    pub async fn subscribe_to_sol_price(
+        &mut self,
+    ) -> Result<broadcast::Receiver<SolPriceUpdate>, AppError> {
+        let (tx, rx) = broadcast::channel(100);
+        let mut connection = self.connection.clone();
+
+        tokio::spawn(async move {
+            let mut last_error_time = None;
+
+            loop {
+                match Self::subscribe_and_forward(&mut connection, &tx).await {
+                    Ok(()) => {
+                        // Successful completion - unlikely in practice
+                        break;
+                    }
+                    Err(e) => {
+                        let now = Instant::now();
+                        // Only log errors once per minute to avoid spam
+                        if last_error_time
+                            .map_or(true, |t: Instant| now.duration_since(t).as_secs() > 60)
+                        {
+                            tracing::error!("Error in SOL price subscription: {}", e);
+                            last_error_time = Some(now);
+                        }
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    async fn subscribe_and_forward(
+        connection: &mut ConnectionManager,
+        tx: &broadcast::Sender<SolPriceUpdate>,
+    ) -> Result<(), AppError> {
+        tracing::info!("Starting subscription to sol_price_updates");
+
+        // Configure connection for RESP3
+        let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3")
+            .map_err(|e| AppError::RedisError(format!("Failed to create Redis client: {}", e)))?;
+
+        let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel();
+        let config = redis::AsyncConnectionConfig::new().set_push_sender(push_tx);
+
+        let mut con = client
+            .get_multiplexed_async_connection_with_config(&config)
+            .await
+            .map_err(|e| AppError::RedisError(format!("Failed to create connection: {}", e)))?;
+
+        tracing::info!("Subscribing to sol_price_updates channel");
+        con.subscribe("sol_price_updates")
+            .await
+            .map_err(|e| AppError::RedisError(format!("Failed to subscribe: {}", e)))?;
+
+        while let Some(msg) = push_rx.recv().await {
+            tracing::debug!("Received push message: {:?}", msg);
+            if msg.kind == redis::PushKind::Message && msg.data.len() >= 2 {
+                if let Ok(payload) = redis::from_redis_value::<String>(&msg.data[1]) {
+                    tracing::info!("Received payload: {}", payload);
+                    if let Ok(update) = serde_json::from_str::<SolPriceUpdate>(&payload) {
+                        if let Err(e) = tx.send(update) {
+                            tracing::error!("Failed to forward update: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }

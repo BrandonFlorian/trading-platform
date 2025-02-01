@@ -1,0 +1,27 @@
+[package]
+name = "trading-sol-price-feed"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dotenv = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+trading-common = { path = "../trading-common" }
+futures-util = { workspace = true }
+solana-client = { workspace = true }
+solana-sdk = { workspace = true }
+pyth-sdk-solana = "0.10.3"
+redis = { workspace = true }
+tokio-stream = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+tracing-subscriber = { workspace = true }
+hex = { workspace = true }
+borsh = { workspace = true }

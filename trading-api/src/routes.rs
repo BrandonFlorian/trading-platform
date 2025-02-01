@@ -818,14 +818,6 @@ pub async fn get_token_metadata(
     Ok(Json(response))
 }
 
-pub async fn trigger_wallet_update(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let response = state.wallet_client.emit_wallet_update().await?;
-    println!("Wallet update response: {:?}", response);
-    Ok(Json(json!({ "success": true })))
-}
-
 pub async fn get_watchlists(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<WatchlistWithTokens>>, AppError> {

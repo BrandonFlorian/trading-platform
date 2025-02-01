@@ -321,6 +321,30 @@ impl ConnectionStatusChange {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceUpdate {
+    pub token_address: String,
+    pub price_sol: f64,
+    pub price_usd: Option<f64>,
+    pub timestamp: i64,
+    pub dex_type: DexType,
+    pub liquidity: Option<f64>,
+    pub liquidity_usd: Option<f64>,
+    pub market_cap: f64,
+    pub pool_address: Option<String>,
+    pub volume_24h: Option<f64>,
+    pub volume_6h: Option<f64>,
+    pub volume_1h: Option<f64>,
+    pub volume_5m: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceUpdateNotification {
+    pub data: PriceUpdate,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionStatusNotification {
     pub data: ConnectionStatusChange,
     #[serde(rename = "type")]
@@ -414,4 +438,25 @@ pub struct WatchlistWithTokens {
     pub tokens: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolPriceUpdate {
+    pub price_usd: f64,
+    pub source: PriceSource,
+    pub timestamp: i64,
+    pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PriceSource {
+    Pyth,
+    Raydium,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolPriceUpdateNotification {
+    pub data: SolPriceUpdate,
+    #[serde(rename = "type")]
+    pub type_: String,
 }

@@ -34,11 +34,17 @@ The project is organized as a Rust workspace with four main components:
    - Redis subscription for settings updates
 
 4. `trading-wallet`: Wallet management service
+
    - gRPC-based wallet operations
    - Centralized wallet state management
    - Token balance tracking
    - Transaction execution
    - Real-time balance updates
+
+5. `trading-price-feed`: Price feed service
+
+   - WebSocket-based price feed
+   - Token price updates
 
 ## Key Features
 
@@ -83,7 +89,7 @@ The project is organized as a Rust workspace with four main components:
 - Protocol Buffers compiler (protoc)
 - docker and docker-compose
 - protobuf
-  
+
 ![trading-platform-diagram](https://github.com/user-attachments/assets/d8f0b4b7-5b99-4719-898a-671e230627cb)
 
 ## Protocol Buffers (gRPC) Setup
