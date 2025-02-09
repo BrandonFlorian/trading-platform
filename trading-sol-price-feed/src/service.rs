@@ -5,7 +5,8 @@ use trading_common::{
     error::AppError,
     event_system::{Event, EventSystem},
     models::{ConnectionStatus, ConnectionType, SolPriceUpdate, SolPriceUpdateNotification},
-    ConnectionMonitor, RedisConnection,
+    redis::RedisConnection,
+    ConnectionMonitor,
 };
 
 use crate::price_monitor::PriceMonitor;
@@ -14,7 +15,7 @@ pub struct SolPriceFeedService {
     price_monitor: Arc<PriceMonitor>,
     event_system: Arc<EventSystem>,
     connection_monitor: Arc<ConnectionMonitor>,
-    redis_connection: RedisConnection,
+    redis_connection: Arc<RedisConnection>,
     current_price: Arc<RwLock<Option<SolPriceUpdate>>>,
     price_sender: broadcast::Sender<SolPriceUpdate>,
     price_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
@@ -42,7 +43,7 @@ impl SolPriceFeedService {
             price_monitor,
             event_system,
             connection_monitor,
-            redis_connection,
+            redis_connection: Arc::new(redis_connection),
             current_price: Arc::new(RwLock::new(None)),
             price_sender,
             price_task: Arc::new(RwLock::new(None)),
@@ -63,33 +64,38 @@ impl SolPriceFeedService {
         // Subscribe to price updates to maintain current price
         let mut price_rx = self.price_sender.subscribe();
         let current_price = self.current_price.clone();
-        let mut redis = self.redis_connection.clone();
         let event_system = self.event_system.clone();
 
-        let task = tokio::spawn(async move {
-            tracing::info!("Price update task started");
-            while let Ok(price_update) = price_rx.recv().await {
-                tracing::info!("Received price update: ${:.2}", price_update.price_usd);
+        let task = tokio::spawn({
+            let redis_connection = self.redis_connection.clone();
+            async move {
+                tracing::info!("Price update task started");
+                while let Ok(price_update) = price_rx.recv().await {
+                    tracing::info!("Received price update: ${:.2}", price_update.price_usd);
 
-                // Update current price
-                *current_price.write() = Some(price_update.clone());
+                    // Update current price
+                    *current_price.write() = Some(price_update.clone());
 
-                // Publish to Redis
-                let price_json = serde_json::to_string(&price_update).unwrap();
-                tracing::info!("Attempting to publish to Redis: {}", price_json);
-                if let Err(e) = redis.publish_sol_price_update(&price_update).await {
-                    tracing::error!("Failed to publish SOL price update to Redis: {}", e);
-                } else {
-                    tracing::debug!("Published SOL price to Redis: {}", price_json);
+                    // Publish to Redis
+                    let price_json = serde_json::to_string(&price_update).unwrap();
+                    tracing::info!("Attempting to publish to Redis: {}", price_json);
+                    if let Err(e) = redis_connection
+                        .publish_sol_price_update(&price_update)
+                        .await
+                    {
+                        tracing::error!("Failed to publish SOL price update to Redis: {}", e);
+                    } else {
+                        tracing::debug!("Published SOL price to Redis: {}", price_json);
+                    }
+
+                    let notification = SolPriceUpdateNotification {
+                        data: price_update,
+                        type_: "sol_price_update".to_string(),
+                    };
+
+                    // Emit event
+                    event_system.emit(Event::SolPriceUpdate(notification));
                 }
-
-                let notification = SolPriceUpdateNotification {
-                    data: price_update,
-                    type_: "sol_price_update".to_string(),
-                };
-
-                // Emit event
-                event_system.emit(Event::SolPriceUpdate(notification));
             }
         });
 

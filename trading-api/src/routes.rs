@@ -45,7 +45,7 @@ pub async fn get_tracked_wallets(
 }
 
 pub async fn add_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Json(wallet): Json<TrackedWallet>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let wallet_address = wallet.wallet_address.clone();
@@ -56,7 +56,7 @@ pub async fn add_tracked_wallet(
 
     state
         .redis_connection
-        .publish_tracked_wallet_update(&wallet, "add")
+        .publish_tracked_wallet_update(&wallet_address, "add")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -74,7 +74,7 @@ pub async fn add_tracked_wallet(
 }
 
 pub async fn archive_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state
@@ -84,7 +84,7 @@ pub async fn archive_tracked_wallet(
 
     state
         .redis_connection
-        .publish_wallet_address_update(&wallet_address, "archive")
+        .publish_tracked_wallet_update(&wallet_address, "archive")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -98,7 +98,7 @@ pub async fn archive_tracked_wallet(
 }
 
 pub async fn unarchive_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state
@@ -108,7 +108,7 @@ pub async fn unarchive_tracked_wallet(
 
     state
         .redis_connection
-        .publish_wallet_address_update(&wallet_address, "unarchive")
+        .publish_tracked_wallet_update(&wallet_address, "unarchive")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -122,7 +122,7 @@ pub async fn unarchive_tracked_wallet(
 }
 
 pub async fn delete_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state
@@ -132,7 +132,7 @@ pub async fn delete_tracked_wallet(
 
     state
         .redis_connection
-        .publish_wallet_address_update(&wallet_address.to_string(), "delete")
+        .publish_tracked_wallet_update(&wallet_address.to_string(), "delete")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -146,7 +146,7 @@ pub async fn delete_tracked_wallet(
 }
 
 pub async fn update_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Json(update): Json<TrackedWallet>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let wallet_address = update.wallet_address.clone();
@@ -157,7 +157,7 @@ pub async fn update_tracked_wallet(
 
     state
         .redis_connection
-        .publish_tracked_wallet_update(&update, "update")
+        .publish_tracked_wallet_update(&update.wallet_address, "update")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -180,7 +180,7 @@ pub async fn get_copy_trade_settings(
 }
 
 pub async fn create_copy_trade_settings(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Json(settings): Json<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let tracked_wallet_id = settings.tracked_wallet_id;
@@ -191,7 +191,7 @@ pub async fn create_copy_trade_settings(
 
     state
         .redis_connection
-        .publish_settings_update(&settings)
+        .publish_settings_update(&settings, "create")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -209,7 +209,7 @@ pub async fn create_copy_trade_settings(
 }
 
 pub async fn update_copy_trade_settings(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Json(settings): Json<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     println!("update_copy_trade_settings() called");
@@ -220,7 +220,7 @@ pub async fn update_copy_trade_settings(
 
     state
         .redis_connection
-        .publish_settings_update(&settings)
+        .publish_settings_update(&settings, "update")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -238,7 +238,7 @@ pub async fn update_copy_trade_settings(
 }
 
 pub async fn delete_copy_trade_settings(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Path(tracked_wallet_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state
@@ -246,11 +246,15 @@ pub async fn delete_copy_trade_settings(
         .delete_copy_trade_settings(tracked_wallet_id)
         .await?;
 
-    state
-        .redis_connection
-        .publish_settings_delete(&tracked_wallet_id.to_string())
-        .await
-        .map_err(|e| AppError::RedisError(e.to_string()))?;
+    let settings = state.supabase_client.get_copy_trade_settings().await?;
+
+    for setting in settings {
+        state
+            .redis_connection
+            .publish_settings_update(&setting, "delete")
+            .await
+            .map_err(|e| AppError::RedisError(e.to_string()))?;
+    }
 
     state
         .event_system

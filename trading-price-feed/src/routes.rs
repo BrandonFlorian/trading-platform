@@ -1,6 +1,6 @@
 use crate::service::PriceFeedService;
 use axum::{
-    extract::{Path, Query, State, WebSocketUpgrade},
+    extract::{ws::Message, Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{delete, get, post},
@@ -23,7 +23,7 @@ pub fn create_router(service: Arc<PriceFeedService>) -> Router {
     Router::new()
         .route("/ws", get(subscribe_price_feed))
         .route("/price/{token_address}", get(get_price))
-        .route("/prices", get(get_all_prices))
+        //.route("/prices", get(get_all_prices))
         .route("/subscribe", post(subscribe_token))
         .route(
             "/unsubscribe/{token_address}/{client_id}",
@@ -40,19 +40,12 @@ async fn get_price(
     Ok(Json(price))
 }
 
-async fn get_all_prices(
-    State(service): State<Arc<PriceFeedService>>,
-) -> Result<impl IntoResponse, AppError> {
-    let prices = service.get_all_prices().await;
-    Ok(Json(prices))
-}
-
 #[axum::debug_handler]
 async fn subscribe_token(
     State(service): State<Arc<PriceFeedService>>,
     Json(request): Json<SubscribeRequest>,
 ) -> Result<Json<()>, AppError> {
-    let pool_monitor = service.pool_monitor.write().await;
+    let pool_monitor = service.pool_monitor.clone();
     pool_monitor
         .subscribe_token(&request.token_address, &request.client_id)
         .await?;
@@ -66,54 +59,118 @@ async fn unsubscribe_token(
 ) -> Result<impl IntoResponse, AppError> {
     service
         .pool_monitor
-        .write()
-        .await
         .unsubscribe_token(&token_address, &client_id)
         .await;
     Ok(StatusCode::OK)
 }
 
-pub async fn subscribe_price_feed(
+async fn subscribe_price_feed(
     State(service): State<Arc<PriceFeedService>>,
     ws: WebSocketUpgrade,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, service, params))
+    // Immediately log what we received
+    tracing::warn!(
+        "WebSocket connection request received with params: {:?}",
+        params
+    );
+
+    // Extract token before upgrade
+    let token = params.get("token").cloned();
+    tracing::warn!("Token extracted from params: {:?}", token);
+
+    ws.on_upgrade(move |socket| handle_socket(socket, service, token))
 }
 
-async fn handle_socket(
+pub async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     service: Arc<PriceFeedService>,
-    params: HashMap<String, String>,
+    token: Option<String>,
 ) {
-    let (mut sender, _) = socket.split();
+    let (mut sender, mut receiver) = socket.split();
     let client_id = Uuid::new_v4().to_string();
 
-    if let Some(token_addr) = params.get("token") {
-        let pool_monitor = service.pool_monitor.write().await;
-        if let Err(e) = pool_monitor.subscribe_token(token_addr, &client_id).await {
-            eprintln!("Failed to subscribe to token {}: {}", token_addr, e);
-            return;
-        }
+    tracing::info!("WebSocket upgraded for client {}", client_id);
 
+    if let Some(token_addr) = token {
+        let pool_monitor = service.pool_monitor.clone();
+        // Move price sender initialization before subscription
         let mut rx = pool_monitor.subscribe_to_updates();
-        drop(pool_monitor); // Release lock early
 
-        while let Ok(update) = rx.recv().await {
-            let msg = serde_json::to_string(&update)
-                .map(|text| axum::extract::ws::Message::Text(text.into()))
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to serialize price update: {}", e);
-                    axum::extract::ws::Message::Close(None)
+        match pool_monitor.subscribe_token(&token_addr, &client_id).await {
+            Ok(()) => {
+                tracing::info!("Successfully subscribed to token {}", token_addr);
+
+                // Create a task for handling WebSocket messages
+                let message_task = tokio::spawn({
+                    let mut receiver = receiver;
+                    let client_id = client_id.clone();
+                    let token_addr = token_addr.clone();
+                    let pool_monitor = pool_monitor.clone();
+
+                    async move {
+                        while let Some(Ok(_msg)) = receiver.next().await {
+                            tracing::debug!("Received message from client {}", client_id);
+                        }
+                        pool_monitor
+                            .unsubscribe_token(&token_addr, &client_id)
+                            .await;
+                        tracing::info!("Client {} disconnected", client_id);
+                    }
                 });
 
-            if sender.send(msg).await.is_err() {
-                break;
+                // Create a task for handling price updates
+                let price_task = tokio::spawn({
+                    let mut sender = sender;
+                    let client_id = client_id.clone();
+                    let token_addr = token_addr.clone();
+
+                    async move {
+                        while let Ok(update) = rx.recv().await {
+                            if update.token_address == token_addr {
+                                if let Ok(msg) = serde_json::to_string(&update) {
+                                    if let Err(e) = sender.send(Message::Text(msg.into())).await {
+                                        tracing::error!(
+                                            "Failed to send price update to client {}: {}",
+                                            client_id,
+                                            e
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // Wait for either task to complete
+                tokio::select! {
+                    _ = message_task => tracing::info!("Message task completed"),
+                    _ = price_task => tracing::info!("Price task completed"),
+                }
+
+                // Cleanup
+                pool_monitor
+                    .unsubscribe_token(&token_addr, &client_id)
+                    .await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to subscribe to token {}: {}", token_addr, e);
+                let error_msg = serde_json::json!({
+                    "error": format!("Failed to subscribe to token: {}", e)
+                });
+                if let Ok(msg) = serde_json::to_string(&error_msg) {
+                    let _ = sender.send(Message::Text(msg.into())).await;
+                }
             }
         }
-
-        // Cleanup subscription
-        let pool_monitor = service.pool_monitor.write().await;
-        pool_monitor.unsubscribe_token(token_addr, &client_id).await;
+    } else {
+        tracing::error!("No token provided for client {}", client_id);
+        let error_msg = serde_json::json!({
+            "error": "No token provided"
+        });
+        if let Ok(msg) = serde_json::to_string(&error_msg) {
+            let _ = sender.send(Message::Text(msg.into())).await;
+        }
     }
 }

@@ -10,7 +10,7 @@ use trading_common::{
     database::SupabaseClient, event_system::EventSystem, server_wallet_client::WalletClient,
     websocket::WebSocketServer,
 };
-use trading_common::{ConnectionMonitor, RedisConnection};
+use trading_common::{redis::RedisConnection, ConnectionMonitor};
 use wallet_monitor::WalletMonitor;
 
 #[tokio::main]

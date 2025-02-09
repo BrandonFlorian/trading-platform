@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use trading_common::ConnectionMonitor;
 use trading_common::{
-    data::get_server_keypair, event_system::EventSystem, redis_connection::RedisConnection,
+    data::get_server_keypair, event_system::EventSystem, redis::RedisConnection,
     server_wallet_client::WalletClient, SupabaseClient,
 };
 
@@ -24,7 +24,7 @@ mod routes;
 struct AppState {
     rpc_client: Arc<ArcSwap<RpcClient>>,
     supabase_client: SupabaseClient,
-    redis_connection: RedisConnection,
+    redis_connection: Arc<RedisConnection>,
     wallet_client: WalletClient,
     event_system: Arc<EventSystem>,
 }
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         rpc_client: shared_rpc_client,
         supabase_client,
-        redis_connection,
+        redis_connection: Arc::new(redis_connection),
         wallet_client,
         event_system,
     };

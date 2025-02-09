@@ -1,26 +1,30 @@
-use parking_lot::RwLock as ParkingLotRwLock;
 use solana_client::rpc_client::RpcClient;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use solana_sdk::pubkey::Pubkey;
+use std::collections::HashMap;
+use std::time::Duration;
+use std::{str::FromStr, sync::Arc};
+use tokio::sync::{broadcast, RwLock};
+use trading_common::dex::DexType;
 use trading_common::{
     error::AppError,
-    event_system::{Event, EventSystem},
-    models::{
-        ConnectionStatus, ConnectionType, PriceUpdate, PriceUpdateNotification, SolPriceUpdate,
-    },
-    ConnectionMonitor, RedisConnection,
+    event_system::EventSystem,
+    models::{ConnectionStatus, ConnectionType, PriceUpdate},
+    redis::RedisConnection,
+    ConnectionMonitor,
 };
 
-use crate::{cache::PriceCache, config::PriceFeedConfig, pool_monitor::PoolMonitor};
+use crate::config::PriceFeedConfig;
+use crate::pool_monitor_websocket::PoolWebSocketMonitor;
+use crate::price_calculator::PriceCalculator;
 
 pub struct PriceFeedService {
-    pub pool_monitor: Arc<RwLock<PoolMonitor>>,
-    price_cache: Arc<ParkingLotRwLock<PriceCache>>,
-    event_system: Arc<EventSystem>,
-    connection_monitor: Arc<ConnectionMonitor>,
-    redis_connection: RedisConnection,
-    config: PriceFeedConfig,
-    current_sol_price: Arc<RwLock<Option<f64>>>,
+    pub pool_monitor: Arc<PoolWebSocketMonitor>,
+    pub price_calculator: Arc<PriceCalculator>,
+    pub event_system: Arc<EventSystem>,
+    pub connection_monitor: Arc<ConnectionMonitor>,
+    pub redis_connection: Arc<RedisConnection>,
+    pub config: PriceFeedConfig,
+    pub rpc_client: Arc<RpcClient>,
 }
 
 impl PriceFeedService {
@@ -31,27 +35,39 @@ impl PriceFeedService {
         redis_url: &str,
         config: PriceFeedConfig,
     ) -> Result<Self, AppError> {
-        let redis_connection = RedisConnection::new(redis_url, connection_monitor.clone()).await?;
+        let redis_connection =
+            Arc::new(RedisConnection::new(redis_url, connection_monitor.clone()).await?);
 
-        let service = Self {
-            pool_monitor: Arc::new(RwLock::new(PoolMonitor::new(
-                rpc_client,
-                event_system.clone(),
-                redis_connection.clone(),
-                config.clone(),
-            ))),
-            price_cache: Arc::new(ParkingLotRwLock::new(PriceCache::new())),
+        // Create price broadcast channel
+        let (price_sender, _) = broadcast::channel(1000);
+
+        let price_calculator = Arc::new(PriceCalculator::new(
+            price_sender.clone(),
+            redis_connection.clone(),
+            rpc_client.clone(),
+        ));
+
+        // Create the client subscriptions map
+        let client_subscriptions = Arc::new(RwLock::new(HashMap::new()));
+
+        // Create pool monitor with correct parameters
+        let pool_monitor = Arc::new(PoolWebSocketMonitor::new(
+            config.rpc_ws_url.clone(),
+            price_sender,
+            rpc_client.clone(),
+            redis_connection.clone(),
+            client_subscriptions.clone(),
+        ));
+
+        Ok(Self {
+            pool_monitor,
+            price_calculator,
             event_system,
             connection_monitor,
             redis_connection,
             config,
-            current_sol_price: Arc::new(RwLock::new(None)),
-        };
-
-        // Subscribe to SOL price updates via Redis
-        service.subscribe_to_sol_price().await?;
-
-        Ok(service)
+            rpc_client,
+        })
     }
 
     pub async fn start(&self) -> Result<(), AppError> {
@@ -63,33 +79,50 @@ impl PriceFeedService {
             )
             .await;
 
-        let mut pool_monitor = self.pool_monitor.write().await;
-        pool_monitor.start_monitoring().await?;
-        let mut price_updates = pool_monitor.subscribe_to_updates();
-        drop(pool_monitor);
+        // Start sol price subscription first
+        self.start_sol_price_subscription().await?;
 
-        // Start processing price updates
-        tokio::spawn({
-            let event_system = self.event_system.clone();
-            let price_cache = self.price_cache.clone();
-            let mut redis = self.redis_connection.clone();
-
+        // Start WebSocket pool monitoring with error handling and reconnection
+        let monitor_handle = tokio::spawn({
+            let pool_monitor = self.pool_monitor.clone();
+            let connection_monitor = self.connection_monitor.clone();
             async move {
-                while let Ok(price_update) = price_updates.recv().await {
-                    // Update cache
-                    price_cache.write().update(price_update.clone());
+                loop {
+                    match pool_monitor.start().await {
+                        Ok(()) => {
+                            tracing::info!("Pool monitor stopped normally");
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::error!("Pool monitor error: {}", e);
+                            connection_monitor
+                                .update_status(
+                                    ConnectionType::WebSocket,
+                                    ConnectionStatus::Error,
+                                    Some(e.to_string()),
+                                )
+                                .await;
 
-                    // Publish to Redis
-                    if let Err(e) = redis.publish_price_update(&price_update).await {
-                        tracing::error!("Failed to publish price update to Redis: {}", e);
+                            // Wait before retry
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+
+                            connection_monitor
+                                .update_status(
+                                    ConnectionType::WebSocket,
+                                    ConnectionStatus::Connecting,
+                                    None,
+                                )
+                                .await;
+                        }
                     }
-
-                    // Emit event
-                    event_system.emit(Event::PriceUpdate(PriceUpdateNotification {
-                        data: price_update,
-                        type_: "price_update".to_string(),
-                    }));
                 }
+            }
+        });
+
+        // Just monitor the pool monitor task
+        tokio::spawn(async move {
+            if let Err(e) = monitor_handle.await {
+                tracing::error!("Monitor task error: {}", e);
             }
         });
 
@@ -100,58 +133,32 @@ impl PriceFeedService {
         Ok(())
     }
 
-    pub async fn stop(&self) -> Result<(), AppError> {
-        self.pool_monitor.write().await.stop_monitoring().await?;
+    pub async fn get_price(&self, token_address: &str) -> Result<Option<PriceUpdate>, AppError> {
+        let pubkey = Pubkey::from_str(token_address)?;
 
-        self.connection_monitor
-            .update_status(
-                ConnectionType::WebSocket,
-                ConnectionStatus::Disconnected,
-                None,
-            )
-            .await;
-
-        Ok(())
+        // Handle the potential error from find_pool
+        match self.pool_monitor.find_pool(&pubkey.to_string()).await {
+            Ok(pool) => {
+                let price_update = self
+                    .price_calculator
+                    .calculate_token_price(&pool, &pubkey)
+                    .await?;
+                Ok(Some(price_update))
+            }
+            Err(AppError::PoolNotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
-    async fn subscribe_to_sol_price(&self) -> Result<(), AppError> {
-        let current_sol_price = self.current_sol_price.clone();
-        let price_cache = self.price_cache.clone();
-        let mut redis = self.redis_connection.clone(); // Just clone it here
-
-        // Get subscription receiver
-        let mut rx = redis.subscribe_to_sol_price().await?;
+    pub async fn start_sol_price_subscription(&self) -> Result<(), AppError> {
+        let mut redis = self.redis_connection.subscribe_to_sol_price().await?;
+        let price_calculator = Arc::clone(&self.price_calculator);
 
         tokio::spawn(async move {
-            while let Ok(update) = rx.recv().await {
-                tracing::debug!("Received SOL price update: ${:.2}", update.price_usd);
-
-                // Update current SOL price
-                *current_sol_price.write().await = Some(update.price_usd);
-
-                // Update USD prices in cache
-                let mut cache = price_cache.write();
-                let prices = cache.get_all_prices();
-
-                // Create updated prices with USD values
-                for mut price in prices {
-                    price.price_usd = Some(price.price_sol * update.price_usd);
-                    price.liquidity_usd = price.liquidity.map(|l| l * update.price_usd);
-                    cache.update(price);
-                }
-
-                tracing::debug!("Received message from Redis: {:?}", update);
+            while let Ok(update) = redis.recv().await {
+                price_calculator.update_sol_price(update).await;
             }
         });
-
         Ok(())
-    }
-
-    pub async fn get_price(&self, token_address: &str) -> Result<Option<PriceUpdate>, AppError> {
-        Ok(self.price_cache.read().get_price(token_address))
-    }
-
-    pub async fn get_all_prices(&self) -> Vec<PriceUpdate> {
-        self.price_cache.read().get_all_prices()
     }
 }

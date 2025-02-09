@@ -1,9 +1,11 @@
-mod cache;
 mod config;
-mod pool_monitor;
+mod pool_monitor_websocket;
+mod price_calculator;
+
 mod raydium;
 mod routes;
 mod service;
+
 use anyhow::{Context, Result};
 use dotenv::dotenv;
 use solana_client::rpc_client::RpcClient;
@@ -30,17 +32,20 @@ async fn main() -> Result<()> {
 
     // Create event system
     let event_system = Arc::new(EventSystem::new());
-    //let _event_rx = event_system.subscribe();
+    let _event_rx = event_system.subscribe();
 
     // Create connection monitor
     let connection_monitor = Arc::new(ConnectionMonitor::new(event_system.clone()));
 
-    // Create configuration
-    let config = PriceFeedConfig::new()
+    // Create configuration with correct WebSocket URL
+    let config = PriceFeedConfig::from_env()
+        .context("Failed to create price feed config")?
         .with_update_interval(std::time::Duration::from_secs(1))
         .with_cache_duration(std::time::Duration::from_secs(60));
 
-    // Create and start price feed service
+    let http_addr = SocketAddr::from(([0, 0, 0, 0], config.http_port));
+
+    // Create service
     let service = Arc::new(
         PriceFeedService::new(
             rpc_client,
@@ -52,29 +57,27 @@ async fn main() -> Result<()> {
         .await?,
     );
 
-    // Start the service
+    // Start service
     service.start().await?;
 
-    let port = std::env::var("PRICE_FEED_PORT").context("PRICE_FEED_PORT must be set")?;
-    // Create API router
+    // Create router with both HTTP and WebSocket endpoints
     let app = routes::create_router(service.clone());
-    let addr = SocketAddr::from(([0, 0, 0, 0], port.parse::<u16>()?));
-    println!("Price feed API listening on {}", addr);
 
     // Create and bind TCP listener
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(http_addr).await?;
+    println!("Server listening on {}", http_addr);
 
-    // Run server
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app.into_make_service()).await {
-            eprintln!("Server error: {}", e);
-        }
-    });
+    // Start HTTP and WebSocket server
+    let server = axum::serve(listener, app.into_make_service());
 
-    // Handle shutdown signals
     let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
 
     tokio::select! {
+        result = server => {
+            if let Err(e) = result {
+                eprintln!("Server error: {}", e);
+            }
+        }
         _ = signal::ctrl_c() => {
             println!("Received Ctrl+C, initiating shutdown...");
         }
@@ -84,7 +87,7 @@ async fn main() -> Result<()> {
     }
 
     // Graceful shutdown
-    service.stop().await?;
+    service.pool_monitor.stop().await?;
     println!("Service stopped. Goodbye!");
 
     Ok(())

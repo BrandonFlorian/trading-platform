@@ -1,9 +1,20 @@
+use super::PriceData;
+use parking_lot::RwLock;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{program_pack::Pack, pubkey::Pubkey};
-use std::{str::FromStr, sync::Arc};
-use trading_common::error::AppError;
+use std::{
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use trading_common::{error::AppError, redis::RedisConnection};
 
-use super::PriceData;
+#[derive(Debug)]
+pub struct AccountData {
+    pub base_balance: u64,
+    pub quote_balance: u64,
+    pub last_updated: Instant,
+}
 
 #[derive(Debug, Clone)]
 pub struct RaydiumPool {
@@ -14,6 +25,7 @@ pub struct RaydiumPool {
     pub quote_vault: Pubkey,
     pub base_decimals: u8,
     pub quote_decimals: u8,
+    pub account_data: Arc<RwLock<Option<AccountData>>>,
 }
 
 impl RaydiumPool {
@@ -30,38 +42,6 @@ impl RaydiumPool {
 
         // Skip 8 byte discriminator
         let data = &data[8..];
-
-        // Log potential scale factors and pool parameters
-        tracing::debug!("Pool data analysis:");
-
-        // Look for potential scale factors in first 100 bytes
-        tracing::debug!("First 100 bytes analysis:");
-        for i in (0..100).step_by(4) {
-            if i + 4 <= data.len() {
-                let value = u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
-                if value > 0 && value < 100 {
-                    tracing::debug!("Potential scale/decimal factor at offset {}: {}", i, value);
-                }
-            }
-        }
-
-        // Look for potential price scale factors in specific ranges
-        for i in (0..data.len()).step_by(8) {
-            if i + 8 <= data.len() {
-                let value = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
-                if value > 0 && value < 1_000_000 {
-                    // Potential scale factor range
-                    tracing::debug!("Potential scale factor at offset {}: {} (u64)", i, value);
-                }
-            }
-        }
-
-        // Log the raw bytes around known offsets
-        tracing::debug!("Bytes at base mint offset (424-464): {:?}", &data[424..464]);
-        tracing::debug!(
-            "Bytes at quote mint offset (368-400): {:?}",
-            &data[368..400]
-        );
 
         let base_mint = {
             let mut bytes = [0u8; 32];
@@ -85,17 +65,10 @@ impl RaydiumPool {
             Pubkey::new_from_array(bytes)
         };
 
-        // Get base decimals from mint account
-        let base_decimals = 6; // todo: FIX get from mint account
-
-        let quote_decimals = 9; // SOL always has 9 decimals
-
-        tracing::info!("Parsed base mint: {}", base_mint);
-        tracing::info!("Parsed quote mint: {}", quote_mint);
-        tracing::info!("Base decimals: {}", base_decimals);
-        tracing::info!("Quote decimals: {}", quote_decimals);
-        tracing::info!("Base vault: {}", base_vault);
-        tracing::info!("Quote vault: {}", quote_vault);
+        println!("Base mint: {}", base_mint);
+        println!("Quote mint: {}", quote_mint);
+        println!("Base vault: {}", base_vault);
+        println!("Quote vault: {}", quote_vault);
 
         Ok(Self {
             address: *address,
@@ -103,9 +76,67 @@ impl RaydiumPool {
             quote_mint,
             base_vault,
             quote_vault,
-            base_decimals,
-            quote_decimals,
+            base_decimals: 0,  // Will be loaded by load_metadata
+            quote_decimals: 9, // SOL always has 9 decimals
+            account_data: Arc::new(RwLock::new(None)),
         })
+    }
+
+    pub async fn load_metadata(
+        &mut self,
+        rpc_client: &Arc<RpcClient>,
+        redis_connection: &Arc<RedisConnection>,
+    ) -> Result<(), AppError> {
+        // Try cache first
+        let decimals = redis_connection.get_token_decimals(&self.base_mint).await?;
+        if let Some(decimals) = decimals {
+            self.base_decimals = decimals;
+            return Ok(());
+        }
+
+        // Fallback to RPC
+        let mint_account = rpc_client.get_account(&self.base_mint)?;
+        let mint_data = spl_token::state::Mint::unpack(&mint_account.data)?;
+        self.base_decimals = mint_data.decimals;
+
+        // Cache the result
+        redis_connection
+            .set_token_decimals(
+                &self.base_mint,
+                self.base_decimals,
+                Duration::from_secs(3600), // 1 hour TTL
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn update_from_websocket_data(&self, account_data: &[u8]) -> Result<(), AppError> {
+        // Extract vault balances from account data
+        // This needs to be adapted based on your exact pool data layout
+        let base_balance = u64::from_le_bytes(account_data[400..408].try_into().map_err(|_| {
+            AppError::SerializationError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid account data length",
+            ))
+        })?);
+        let quote_balance =
+            u64::from_le_bytes(account_data[408..416].try_into().map_err(|_| {
+                AppError::SerializationError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid account data length",
+                ))
+            })?);
+
+        // Update cached data
+        let mut cache = self.account_data.write();
+        *cache = Some(AccountData {
+            base_balance,
+            quote_balance,
+            last_updated: Instant::now(),
+        });
+
+        Ok(())
     }
 
     pub async fn fetch_price_data(
