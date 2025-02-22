@@ -47,14 +47,7 @@ async fn main() -> Result<()> {
 
     // Create service
     let service = Arc::new(
-        PriceFeedService::new(
-            rpc_client,
-            event_system,
-            connection_monitor.clone(),
-            &redis_url,
-            config,
-        )
-        .await?,
+        PriceFeedService::new(rpc_client, connection_monitor.clone(), &redis_url, config).await?,
     );
 
     // Start service

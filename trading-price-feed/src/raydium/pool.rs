@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use trading_common::{error::AppError, redis::RedisConnection};
+use trading_common::{error::AppError, redis::RedisPool};
 
 #[derive(Debug)]
 pub struct AccountData {
@@ -85,8 +85,9 @@ impl RaydiumPool {
     pub async fn load_metadata(
         &mut self,
         rpc_client: &Arc<RpcClient>,
-        redis_connection: &Arc<RedisConnection>,
+        redis_connection: &Arc<RedisPool>,
     ) -> Result<(), AppError> {
+        tracing::info!("Loading metadata for pool: {}", self.address);
         // Try cache first
         let decimals = redis_connection.get_token_decimals(&self.base_mint).await?;
         if let Some(decimals) = decimals {
@@ -111,30 +112,66 @@ impl RaydiumPool {
         Ok(())
     }
 
-    pub async fn update_from_websocket_data(&self, account_data: &[u8]) -> Result<(), AppError> {
-        // Extract vault balances from account data
-        // This needs to be adapted based on your exact pool data layout
-        let base_balance = u64::from_le_bytes(account_data[400..408].try_into().map_err(|_| {
-            AppError::SerializationError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid account data length",
-            ))
-        })?);
-        let quote_balance =
-            u64::from_le_bytes(account_data[408..416].try_into().map_err(|_| {
-                AppError::SerializationError(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid account data length",
-                ))
-            })?);
+    pub async fn update_from_websocket_data(&self, data: &[u8]) -> Result<(), AppError> {
+        tracing::info!("Updating pool from websocket data");
 
-        // Update cached data
-        let mut cache = self.account_data.write();
-        *cache = Some(AccountData {
-            base_balance,
-            quote_balance,
+        // Skip 8 byte discriminator
+        if data.len() < 8 + 752 {
+            return Err(AppError::SerializationError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid data length: {}, expected at least 760", data.len()),
+            )));
+        }
+        let data = &data[8..];
+
+        // Extract vault balances and update account data
+        let base_vault = {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&data[328..360]);
+            Pubkey::new_from_array(bytes)
+        };
+
+        let quote_vault = {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&data[360..392]);
+            Pubkey::new_from_array(bytes)
+        };
+
+        // Verify vaults match
+        if base_vault != self.base_vault || quote_vault != self.quote_vault {
+            return Err(AppError::WebSocketError(
+                "Vault addresses don't match pool data".to_string(),
+            ));
+        }
+
+        // Update account data with new balances
+        let mut account_data = self.account_data.write();
+        *account_data = Some(AccountData {
+            base_balance: u64::from_le_bytes(data[0..8].try_into().map_err(
+                |e: std::array::TryFromSliceError| {
+                    AppError::SerializationError(borsh::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    ))
+                },
+            )?),
+            quote_balance: u64::from_le_bytes(data[8..16].try_into().map_err(
+                |e: std::array::TryFromSliceError| {
+                    AppError::SerializationError(borsh::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    ))
+                },
+            )?),
             last_updated: Instant::now(),
         });
+
+        tracing::info!(
+            "Updated pool data for {}\nBase vault: {}\nQuote vault: {}",
+            self.address,
+            base_vault,
+            quote_vault
+        );
 
         Ok(())
     }
@@ -144,6 +181,7 @@ impl RaydiumPool {
         rpc_client: &Arc<RpcClient>,
         sol_price_usd: f64,
     ) -> Result<PriceData, AppError> {
+        tracing::info!("Fetching price data for pool: {}", self.address);
         // Get token account balances
         let base_balance = rpc_client
             .get_token_account_balance(&self.base_vault)

@@ -3,4 +3,4 @@ mod connection;
 mod pubsub;
 
 pub use cache::CacheConfig;
-pub use connection::RedisConnection;
+pub use connection::RedisPool;

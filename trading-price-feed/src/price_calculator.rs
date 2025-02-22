@@ -6,36 +6,22 @@ use tokio::sync::broadcast;
 use trading_common::{
     error::AppError,
     models::{PriceUpdate, SolPriceUpdate},
-    redis::RedisConnection,
+    redis::RedisPool,
 };
 
 use crate::raydium::RaydiumPool;
 
 pub struct PriceCalculator {
-    pub current_sol_price: Arc<RwLock<f64>>,
-    pub price_sender: broadcast::Sender<PriceUpdate>,
-    pub redis_connection: Arc<RedisConnection>,
+    pub redis_connection: Arc<RedisPool>,
     pub rpc_client: Arc<RpcClient>,
 }
 
 impl PriceCalculator {
-    pub fn new(
-        price_sender: broadcast::Sender<PriceUpdate>,
-        redis_connection: Arc<RedisConnection>,
-        rpc_client: Arc<RpcClient>,
-    ) -> Self {
+    pub fn new(redis_connection: Arc<RedisPool>, rpc_client: Arc<RpcClient>) -> Self {
         Self {
-            current_sol_price: Arc::new(RwLock::new(0.0)),
-            price_sender,
             redis_connection,
             rpc_client,
         }
-    }
-
-    /// Update SOL price from external feed
-    pub async fn update_sol_price(&self, update: SolPriceUpdate) {
-        let mut price = self.current_sol_price.write();
-        *price = update.price_usd;
     }
 
     /// Calculate price information from pool data
@@ -44,31 +30,33 @@ impl PriceCalculator {
         pool: &RaydiumPool,
         token_mint: &Pubkey,
     ) -> Result<PriceUpdate, AppError> {
-        let sol_price = *self.current_sol_price.read();
+        tracing::info!("Calculating token price for {}", token_mint);
+        let sol_price = self
+            .redis_connection
+            .get_sol_price()
+            .await?
+            .ok_or_else(|| AppError::RedisError("SOL price not found in cache".to_string()))?;
+
         let price_data = pool.fetch_price_data(&self.rpc_client, sol_price).await?;
+
+        // Calculate USD values
+        let price_usd = Some(price_data.price_sol * sol_price);
+        let liquidity_usd = price_data.liquidity.map(|l| l * sol_price);
 
         Ok(PriceUpdate {
             token_address: token_mint.to_string(),
             price_sol: price_data.price_sol,
-            price_usd: price_data.price_usd,
+            price_usd,
             market_cap: price_data.market_cap,
             timestamp: chrono::Utc::now().timestamp(),
             dex_type: trading_common::dex::DexType::Raydium,
             liquidity: price_data.liquidity,
-            liquidity_usd: price_data.liquidity_usd,
+            liquidity_usd,
             pool_address: Some(pool.address.to_string()),
             volume_24h: price_data.volume_24h,
             volume_6h: price_data.volume_6h,
             volume_1h: price_data.volume_1h,
             volume_5m: price_data.volume_5m,
         })
-    }
-
-    /// Broadcast a price update to subscribers
-    pub async fn broadcast_price_update(&self, update: PriceUpdate) -> Result<(), AppError> {
-        self.price_sender.send(update).map_err(|e| {
-            AppError::NotificationError(format!("Failed to send price update: {}", e))
-        })?;
-        Ok(())
     }
 }

@@ -34,7 +34,7 @@ pub struct EventSystem {
 
 impl EventSystem {
     pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(200);
+        let (sender, _) = broadcast::channel(2000);
         Self { sender }
     }
 

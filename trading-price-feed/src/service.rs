@@ -9,7 +9,7 @@ use trading_common::{
     error::AppError,
     event_system::EventSystem,
     models::{ConnectionStatus, ConnectionType, PriceUpdate},
-    redis::RedisConnection,
+    redis::RedisPool,
     ConnectionMonitor,
 };
 
@@ -20,29 +20,24 @@ use crate::price_calculator::PriceCalculator;
 pub struct PriceFeedService {
     pub pool_monitor: Arc<PoolWebSocketMonitor>,
     pub price_calculator: Arc<PriceCalculator>,
-    pub event_system: Arc<EventSystem>,
     pub connection_monitor: Arc<ConnectionMonitor>,
-    pub redis_connection: Arc<RedisConnection>,
-    pub config: PriceFeedConfig,
-    pub rpc_client: Arc<RpcClient>,
+    pub redis_connection: Arc<RedisPool>,
 }
 
 impl PriceFeedService {
     pub async fn new(
         rpc_client: Arc<RpcClient>,
-        event_system: Arc<EventSystem>,
         connection_monitor: Arc<ConnectionMonitor>,
         redis_url: &str,
         config: PriceFeedConfig,
     ) -> Result<Self, AppError> {
         let redis_connection =
-            Arc::new(RedisConnection::new(redis_url, connection_monitor.clone()).await?);
+            Arc::new(RedisPool::new(redis_url, connection_monitor.clone()).await?);
 
         // Create price broadcast channel
         let (price_sender, _) = broadcast::channel(1000);
 
         let price_calculator = Arc::new(PriceCalculator::new(
-            price_sender.clone(),
             redis_connection.clone(),
             rpc_client.clone(),
         ));
@@ -62,11 +57,8 @@ impl PriceFeedService {
         Ok(Self {
             pool_monitor,
             price_calculator,
-            event_system,
             connection_monitor,
             redis_connection,
-            config,
-            rpc_client,
         })
     }
 
@@ -80,7 +72,31 @@ impl PriceFeedService {
             .await;
 
         // Start sol price subscription first
+        tracing::info!("Starting SOL price subscription...");
         self.start_sol_price_subscription().await?;
+
+        // Wait for initial SOL price with timeout
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(10);
+
+        while start.elapsed() < timeout {
+            if let Ok(Some(sol_price)) = self.redis_connection.get_sol_price().await {
+                tracing::info!("Initial SOL price received: {}", sol_price);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // Check if we got the SOL price
+        if self.redis_connection.get_sol_price().await?.is_none() {
+            return Err(AppError::RedisError(
+                "Failed to get initial SOL price".into(),
+            ));
+        }
+        // Add subscription recovery here
+        if let Err(e) = self.pool_monitor.recover_subscriptions().await {
+            tracing::error!("Failed to recover subscriptions: {}", e);
+        }
 
         // Start WebSocket pool monitoring with error handling and reconnection
         let monitor_handle = tokio::spawn({
@@ -151,14 +167,16 @@ impl PriceFeedService {
     }
 
     pub async fn start_sol_price_subscription(&self) -> Result<(), AppError> {
+        tracing::info!("Starting SOL price subscription...");
         let mut redis = self.redis_connection.subscribe_to_sol_price().await?;
-        let price_calculator = Arc::clone(&self.price_calculator);
 
         tokio::spawn(async move {
+            tracing::info!("Starting SOL price subscription loop...");
             while let Ok(update) = redis.recv().await {
-                price_calculator.update_sol_price(update).await;
+                tracing::info!("Received SOL price update: ${:.2}", update.price_usd);
             }
         });
+        tracing::info!("SOL price subscription initialized");
         Ok(())
     }
 }

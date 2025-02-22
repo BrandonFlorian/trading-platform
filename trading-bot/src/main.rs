@@ -10,7 +10,7 @@ use trading_common::{
     database::SupabaseClient, event_system::EventSystem, server_wallet_client::WalletClient,
     websocket::WebSocketServer,
 };
-use trading_common::{redis::RedisConnection, ConnectionMonitor};
+use trading_common::{redis::RedisPool, ConnectionMonitor};
 use wallet_monitor::WalletMonitor;
 
 #[tokio::main]
@@ -47,19 +47,27 @@ async fn main() -> Result<()> {
     // Connection monitor
     let connection_monitor = Arc::new(ConnectionMonitor::new(event_system.clone()));
 
+    // Initialize Redis Pool
+    println!("Initializing Redis pool...");
+    let redis_pool = Arc::new(
+        RedisPool::new(&redis_url, connection_monitor.clone())
+            .await
+            .context("Failed to create Redis pool")?,
+    );
+
+    // Subscribe to updates
+    println!("Setting up Redis subscriptions...");
+    if let Err(e) = redis_pool.subscribe_to_updates().await {
+        eprintln!("Failed to set up Redis subscription: {}", e);
+    } else {
+        println!("Redis subscription set up successfully");
+    }
+
     // Wallet client
     let wallet_addr =
         std::env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
     let wallet_client =
         Arc::new(WalletClient::connect(wallet_addr, connection_monitor.clone()).await?);
-
-    // Subscribe to settings updates from the API
-    println!("Setting up Redis subscription...");
-    if let Err(e) = RedisConnection::subscribe_to_updates(&redis_url, event_system.clone()).await {
-        eprintln!("Failed to set up Redis subscription: {}", e);
-    } else {
-        println!("Redis subscription set up successfully");
-    }
 
     // Supabase client
     let supabase_client = Arc::new(SupabaseClient::new(
@@ -118,6 +126,9 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Store redis_pool in a variable that will live until shutdown
+    let redis_pool_for_shutdown = Arc::clone(&redis_pool);
+
     // Handle shutdown signals
     tokio::select! {
         _ = signal::ctrl_c() => {
@@ -135,6 +146,9 @@ async fn main() -> Result<()> {
     if let Err(e) = shutdown_monitor.stop().await {
         eprintln!("Error during shutdown: {:?}", e);
     }
+
+    // Clean up Redis connections
+    drop(redis_pool_for_shutdown);
     println!("Shutdown complete.");
 
     Ok(())

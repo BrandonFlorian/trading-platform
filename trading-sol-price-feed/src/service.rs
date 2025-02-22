@@ -5,7 +5,7 @@ use trading_common::{
     error::AppError,
     event_system::{Event, EventSystem},
     models::{ConnectionStatus, ConnectionType, SolPriceUpdate, SolPriceUpdateNotification},
-    redis::RedisConnection,
+    redis::RedisPool,
     ConnectionMonitor,
 };
 
@@ -15,7 +15,7 @@ pub struct SolPriceFeedService {
     price_monitor: Arc<PriceMonitor>,
     event_system: Arc<EventSystem>,
     connection_monitor: Arc<ConnectionMonitor>,
-    redis_connection: Arc<RedisConnection>,
+    redis_connection: Arc<RedisPool>,
     current_price: Arc<RwLock<Option<SolPriceUpdate>>>,
     price_sender: broadcast::Sender<SolPriceUpdate>,
     price_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
@@ -28,7 +28,7 @@ impl SolPriceFeedService {
         connection_monitor: Arc<ConnectionMonitor>,
         redis_url: &str,
     ) -> Result<Self, AppError> {
-        let redis_connection = RedisConnection::new(redis_url, connection_monitor.clone()).await?;
+        let redis_connection = RedisPool::new(redis_url, connection_monitor.clone()).await?;
         let (price_sender, _) = broadcast::channel::<SolPriceUpdate>(100);
 
         let monitor_price_sender = price_sender.clone();

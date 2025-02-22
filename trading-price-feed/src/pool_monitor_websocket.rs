@@ -9,21 +9,21 @@ use solana_client::rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType};
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, RwLock};
 use tokio_tungstenite::{tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream};
-use trading_common::redis::RedisConnection;
+use trading_common::redis::RedisPool;
 use trading_common::{error::AppError, models::PriceUpdate};
-use trading_common::{WebSocketConfig, WebSocketConnectionManager, RAYDIUM_V4};
+use trading_common::{WebSocketConfig, WebSocketConnectionManager, RAYDIUM_V4, WSOL};
 
 pub struct PoolWebSocketMonitor {
     connection_manager: Arc<RwLock<WebSocketConnectionManager>>,
     subscribed_pools: Arc<RwLock<HashMap<Pubkey, RaydiumPool>>>,
     price_sender: broadcast::Sender<PriceUpdate>,
     rpc_client: Arc<RpcClient>,
-    redis_connection: Arc<RedisConnection>,
+    redis_connection: Arc<RedisPool>,
     client_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
 }
 
@@ -32,7 +32,7 @@ impl PoolWebSocketMonitor {
         rpc_ws_url: String,
         price_sender: broadcast::Sender<PriceUpdate>,
         rpc_client: Arc<RpcClient>,
-        redis_connection: Arc<RedisConnection>,
+        redis_connection: Arc<RedisPool>,
         client_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     ) -> Self {
         let ws_config = WebSocketConfig {
@@ -94,26 +94,63 @@ impl PoolWebSocketMonitor {
         Ok(())
     }
 
-    async fn subscribe_to_pool_updates(
+    pub async fn subscribe_to_pool_updates(
         &self,
         connection: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
         pool_pubkey: &Pubkey,
     ) -> Result<(), AppError> {
+        tracing::info!("Subscribing to pool updates for {}", pool_pubkey);
+
         let subscription = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "accountSubscribe",
             "params": [
                 pool_pubkey.to_string(),
-                {"encoding": "base64", "commitment": "processed"}
+                {
+                    "encoding": "base64",
+                    "commitment": "confirmed",
+                    "filters": [
+                        {
+                            "memcmp": {
+                                "offset": 8,
+                                "bytes": RAYDIUM_V4
+                            }
+                        }
+                    ]
+                }
             ]
         });
 
-        connection
-            .send(Message::Text(subscription.to_string().into()))
-            .await?;
+        // Send subscription with timeout
+        let timeout = Duration::from_secs(5);
+        match tokio::time::timeout(timeout, async {
+            connection
+                .send(Message::Text(subscription.to_string().into()))
+                .await?;
 
-        Ok(())
+            // Wait for confirmation
+            while let Some(msg) = connection.next().await {
+                match msg {
+                    Ok(Message::Text(resp)) => {
+                        let v: Value = serde_json::from_str(&resp)?;
+                        if let Some(result) = v.get("result") {
+                            tracing::info!("Subscription confirmed with ID: {}", result);
+                            return Ok(());
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+            Err(AppError::WebSocketError(
+                "No subscription confirmation".into(),
+            ))
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(AppError::WebSocketError("Subscription timeout".into())),
+        }
     }
 
     pub fn subscribe_to_updates(&self) -> broadcast::Receiver<PriceUpdate> {
@@ -121,103 +158,103 @@ impl PoolWebSocketMonitor {
     }
 
     pub async fn process_pool_update(&self, msg: &str) -> Result<(), AppError> {
-        tracing::debug!("Processing WebSocket message: {}", msg);
-
+        tracing::info!("Processing pool update: {}", msg);
         let parsed: Value = serde_json::from_str(msg)?;
 
-        // Check if this is a subscription notification
-        if let Some(params) = parsed.get("params") {
-            let notification = params
-                .get("result")
-                .ok_or_else(|| AppError::WebSocketError("Missing result in notification".into()))?;
+        // Extract data from notification
+        let (pool_pubkey, data) = {
+            let params = parsed
+                .get("params")
+                .ok_or_else(|| AppError::WebSocketError("Missing params".into()))?;
 
-            // Extract account data and pubkey
-            let data = notification
+            let value = params
                 .get("value")
-                .and_then(|v| v.get("data"))
+                .ok_or_else(|| AppError::WebSocketError("Missing value".into()))?;
+
+            let pubkey = value
+                .get("pubkey")
+                .and_then(|p| p.as_str())
+                .ok_or_else(|| AppError::WebSocketError("Missing pubkey".into()))?;
+
+            let data = value
+                .get("data")
                 .and_then(|d| d.as_array())
                 .and_then(|arr| arr.first())
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| AppError::WebSocketError("Invalid data format".into()))?;
 
-            let pubkey = notification
-                .get("value")
-                .and_then(|v| v.get("pubkey"))
-                .and_then(|p| p.as_str())
-                .ok_or_else(|| AppError::WebSocketError("Missing pubkey".into()))?;
+            (Pubkey::from_str(pubkey)?, data)
+        };
 
-            let pool_pubkey = Pubkey::from_str(pubkey)?;
+        // Get the pool
+        let pools = self.subscribed_pools.read().await;
+        if let Some(pool) = pools.get(&pool_pubkey) {
+            // Decode and process pool data
+            let decoded_data = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|e| {
+                    AppError::SerializationError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Failed to decode base64 data: {}", e),
+                    ))
+                })?;
 
-            // Process pool update
-            tracing::debug!("Processing update for pool: {}", pool_pubkey);
+            // Update pool data
+            pool.update_from_websocket_data(&decoded_data).await?;
 
-            let pools = self.subscribed_pools.read().await;
-            if let Some(pool) = pools.get(&pool_pubkey) {
-                // Decode account data
-                let decoded_data = base64::engine::general_purpose::STANDARD
-                    .decode(data)
-                    .map_err(|e| AppError::WebSocketError(format!("Invalid base64: {}", e)))?;
+            // Get current SOL price
+            let current_sol_price = self
+                .redis_connection
+                .get_sol_price()
+                .await?
+                .ok_or_else(|| AppError::RedisError("SOL price not found".to_string()))?;
 
-                // Update pool data
-                pool.update_from_websocket_data(&decoded_data).await?;
+            // Calculate new price data
+            let price_data = pool
+                .fetch_price_data(&self.rpc_client, current_sol_price)
+                .await?;
 
-                let current_sol_price =
-                    self.redis_connection
-                        .get_sol_price()
-                        .await?
-                        .ok_or_else(|| {
-                            AppError::RedisError("SOL price not found in cache".to_string())
-                        })?;
+            // Create and broadcast price update
+            let update = PriceUpdate {
+                token_address: pool.base_mint.to_string(),
+                price_sol: price_data.price_sol,
+                price_usd: price_data.price_usd,
+                market_cap: price_data.market_cap,
+                timestamp: chrono::Utc::now().timestamp(),
+                dex_type: trading_common::dex::DexType::Raydium,
+                liquidity: price_data.liquidity,
+                liquidity_usd: price_data.liquidity_usd,
+                pool_address: Some(pool_pubkey.to_string()),
+                volume_24h: price_data.volume_24h,
+                volume_6h: price_data.volume_6h,
+                volume_1h: price_data.volume_1h,
+                volume_5m: price_data.volume_5m,
+            };
 
-                let price_data = pool
-                    .fetch_price_data(&self.rpc_client, current_sol_price)
-                    .await?;
-
-                tracing::info!(
-                    "Calculated updated price for token {}: SOL {}, USD {}",
-                    pool.base_mint,
-                    price_data.price_sol,
-                    price_data.price_usd.unwrap_or_default()
-                );
-
-                // Create and send price update
-                let update = PriceUpdate {
-                    token_address: pool.base_mint.to_string(),
-                    price_sol: price_data.price_sol,
-                    price_usd: price_data.price_usd,
-                    market_cap: price_data.market_cap,
-                    timestamp: chrono::Utc::now().timestamp(),
-                    dex_type: trading_common::dex::DexType::Raydium,
-                    liquidity: price_data.liquidity,
-                    liquidity_usd: price_data.liquidity_usd,
-                    pool_address: Some(pool_pubkey.to_string()),
-                    volume_24h: price_data.volume_24h,
-                    volume_6h: price_data.volume_6h,
-                    volume_1h: price_data.volume_1h,
-                    volume_5m: price_data.volume_5m,
-                };
-
-                let receiver_count = self.price_sender.receiver_count();
-                tracing::info!("Broadcasting price update to {} receivers", receiver_count);
-
-                if let Err(e) = self.price_sender.send(update) {
-                    tracing::error!("Failed to send price update: {}", e);
-                } else {
-                    tracing::debug!("Successfully sent price update");
-                }
+            // Broadcast update
+            if let Err(e) = self.price_sender.send(update.clone()) {
+                tracing::error!("Failed to send price update through channel: {}", e);
             }
+
+            tracing::info!("Successfully processed and broadcast pool update");
         }
 
         Ok(())
     }
 
     pub async fn find_pool(&self, token_address: &str) -> Result<RaydiumPool, AppError> {
+        tracing::info!("Finding pool for token {}", token_address);
         let token_pubkey = Pubkey::from_str(token_address)
             .map_err(|_| AppError::InvalidPoolAddress(token_address.to_string()))?;
+
+        // SOL token pubkey - we'll use this to validate quote mint
+        let sol_pubkey = Pubkey::from_str(WSOL)?;
 
         // Search for pool with token as base mint
         let memcmp = Memcmp::new(432, MemcmpEncodedBytes::Base58(token_pubkey.to_string()));
         let filters = vec![RpcFilterType::DataSize(752), RpcFilterType::Memcmp(memcmp)];
+
+        tracing::info!("Searching for pools with base mint {}", token_pubkey);
 
         let config = RpcProgramAccountsConfig {
             filters: Some(filters),
@@ -237,117 +274,98 @@ impl PoolWebSocketMonitor {
             .get_program_accounts_with_config(&raydium_program, config)
             .map_err(|e| AppError::SolanaRpcError { source: e })?;
 
-        // Find first valid pool
+        tracing::info!("Found {} potential pool accounts", accounts.len());
+
+        // Track the best pool based on liquidity
+        let mut best_pool: Option<(RaydiumPool, u64)> = None;
+
+        // Find pool with highest liquidity
         for (pubkey, account) in accounts {
             if let Ok(mut pool) = RaydiumPool::from_account_data(&pubkey, &account.data) {
+                // Verify this is a SOL pool
+                if pool.quote_mint != sol_pubkey {
+                    continue;
+                }
+
+                tracing::info!("Loading metadata for pool candidate: {}", pubkey);
                 pool.load_metadata(&self.rpc_client, &self.redis_connection)
                     .await?;
-                if pool.base_mint == token_pubkey {
-                    return Ok(pool);
+
+                // Get pool liquidity
+                let quote_balance = self
+                    .rpc_client
+                    .get_token_account_balance(&pool.quote_vault)
+                    .map_err(|e| AppError::SolanaRpcError { source: e })?;
+
+                let liquidity = quote_balance.amount.parse::<u64>().unwrap_or(0);
+
+                // Update best pool if this has higher liquidity
+                match &best_pool {
+                    None => best_pool = Some((pool, liquidity)),
+                    Some((_, current_liquidity)) if liquidity > *current_liquidity => {
+                        best_pool = Some((pool, liquidity));
+                    }
+                    _ => {}
                 }
             }
         }
 
-        Err(AppError::PoolNotFound(token_address.to_string()))
+        // Return the pool with highest liquidity
+        best_pool
+            .map(|(pool, _)| pool)
+            .ok_or_else(|| AppError::PoolNotFound(token_address.to_string()))
     }
 
     pub async fn stop(&self) -> Result<(), AppError> {
-        self.connection_manager.write().await.shutdown().await
-    }
+        tracing::info!("Initiating pool monitor shutdown");
 
-    pub async fn subscribe_token(
-        &self,
-        token_address: &str,
-        client_id: &str,
-    ) -> Result<(), AppError> {
-        tracing::info!(
-            "Adding subscription for token {} from client {}",
-            token_address,
-            client_id
-        );
-
-        let mut subscribed_pools = self.subscribed_pools.write().await;
-        let mut client_subs = self.client_subscriptions.write().await;
-
-        // Check if we already have this pool
-        let pubkey = Pubkey::from_str(token_address)?;
-
-        let pool = if let std::collections::hash_map::Entry::Vacant(e) =
-            subscribed_pools.entry(pubkey)
-        {
-            tracing::info!("Finding pool for token {}", token_address);
-            let pool = self.find_pool(token_address).await?;
-
-            // Get initial price
-            let current_sol_price = self
-                .redis_connection
-                .get_sol_price()
-                .await?
-                .ok_or_else(|| AppError::RedisError("SOL price not found in cache".to_string()))?;
-
-            let initial_price = pool
-                .fetch_price_data(&self.rpc_client, current_sol_price)
-                .await?;
-
-            tracing::info!(
-                "Initial price for token {}: SOL {}, USD {}",
-                token_address,
-                initial_price.price_sol,
-                initial_price.price_usd.unwrap_or_default()
-            );
-
-            // Emit initial price update
-            let update = PriceUpdate {
-                token_address: token_address.to_string(),
-                price_sol: initial_price.price_sol,
-                price_usd: initial_price.price_usd,
-                market_cap: initial_price.market_cap,
-                timestamp: chrono::Utc::now().timestamp(),
-                dex_type: trading_common::dex::DexType::Raydium,
-                liquidity: initial_price.liquidity,
-                liquidity_usd: initial_price.liquidity_usd,
-                pool_address: Some(pool.address.to_string()),
-                volume_24h: initial_price.volume_24h,
-                volume_6h: initial_price.volume_6h,
-                volume_1h: initial_price.volume_1h,
-                volume_5m: initial_price.volume_5m,
-            };
-
-            if let Err(e) = self.price_sender.send(update) {
-                tracing::error!("Failed to send initial price update: {}", e);
-            }
-
-            // Subscribe via WebSocket
-            let mut manager = self.connection_manager.write().await;
-            let connection = manager.ensure_connection().await?;
-
-            tracing::info!("Subscribing to pool updates for {}", pool.address);
-            self.subscribe_to_pool_updates(connection, &pool.address)
-                .await?;
-
-            e.insert(pool.clone());
-            pool
-        } else {
-            subscribed_pools.get(&pubkey).unwrap().clone()
+        // First get all pool keys without holding the lock
+        let pool_keys: Vec<Pubkey> = {
+            let pools = self.subscribed_pools.read().await;
+            pools.keys().cloned().collect()
         };
 
-        // Update client subscriptions
-        client_subs
-            .entry(token_address.to_string())
-            .or_insert_with(HashSet::new)
-            .insert(client_id.to_string());
+        // Then unsubscribe each pool
+        for pubkey in pool_keys {
+            let unsubscribe = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "accountUnsubscribe",
+                "params": [pubkey.to_string()]
+            });
 
-        tracing::info!(
-            "Successfully subscribed client {} to token {} with pool {}",
-            client_id,
-            token_address,
-            pool.address
-        );
+            // Get a fresh connection for each unsubscribe
+            let mut manager = self.connection_manager.write().await;
+            if let Ok(connection) = manager.ensure_connection().await {
+                let _ = connection
+                    .send(Message::Text(unsubscribe.to_string().into()))
+                    .await;
+            }
+        }
 
+        // Clear state
+        {
+            let mut pools = self.subscribed_pools.write().await;
+            pools.clear();
+        }
+        {
+            let mut subs = self.client_subscriptions.write().await;
+            subs.clear();
+        }
+
+        // Final shutdown
+        self.connection_manager.write().await.shutdown().await?;
+
+        tracing::info!("Pool monitor shutdown complete");
         Ok(())
     }
 
     pub async fn unsubscribe_token(&self, token_address: &str, client_id: &str) {
+        tracing::info!(
+            "Unsubscribing client {} from token {}",
+            client_id,
+            token_address
+        );
         // Remove client subscription
         let mut client_subs = self.client_subscriptions.write().await;
         if let Some(subs) = client_subs.get_mut(token_address) {
@@ -364,5 +382,177 @@ impl PoolWebSocketMonitor {
                 }
             }
         }
+    }
+
+    pub async fn batch_subscribe(
+        &self,
+        token_addresses: Vec<String>,
+        client_id: &str,
+    ) -> Result<(), AppError> {
+        tracing::info!("Starting batch_subscribe");
+
+        let mut pools_to_subscribe = Vec::new();
+        for token_address in token_addresses {
+            match self.find_pool(&token_address).await {
+                Ok(pool) => {
+                    let pubkey = Pubkey::from_str(&token_address)?;
+                    pools_to_subscribe.push((pubkey, pool, token_address));
+                }
+                Err(e) => {
+                    tracing::error!("Failed to find pool for token {}: {}", token_address, e);
+                }
+            }
+        }
+
+        for (pubkey, pool, token_address) in pools_to_subscribe {
+            let mut attempts = 0;
+            const MAX_ATTEMPTS: u32 = 3;
+            const TIMEOUT: Duration = Duration::from_secs(5);
+
+            'retry: while attempts < MAX_ATTEMPTS {
+                attempts += 1;
+                tracing::info!("Attempt {} to subscribe to pool {}", attempts, pool.address);
+
+                let subscription = json!({
+                    "jsonrpc": "2.0",
+                    "id": attempts,
+                    "method": "accountSubscribe",
+                    "params": [
+                        pool.address.to_string(),
+                        {
+                            "encoding": "base64",
+                            "commitment": "confirmed"
+                        }
+                    ]
+                });
+
+                // Take a short-lived lock to send the subscription
+                let response_id = {
+                    let mut manager = self.connection_manager.write().await;
+                    match manager.ensure_connection().await {
+                        Ok(connection) => {
+                            if let Err(e) = connection
+                                .send(Message::Text(subscription.to_string().into()))
+                                .await
+                            {
+                                tracing::error!("Failed to send subscription: {}", e);
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                continue 'retry;
+                            }
+                            attempts
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to get connection: {}", e);
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue 'retry;
+                        }
+                    }
+                };
+
+                // Clone values for the async block
+                let token_address_for_async = token_address.clone();
+                let pool_for_async = pool.clone();
+                let client_id_for_async = client_id.to_string();
+
+                // Wait for confirmation with timeout, without holding the lock
+                match tokio::time::timeout(TIMEOUT, async move {
+                    let start = Instant::now();
+                    while start.elapsed() < TIMEOUT {
+                        let msg = {
+                            let mut manager = self.connection_manager.write().await;
+                            match manager.ensure_connection().await {
+                                Ok(connection) => match connection.next().await {
+                                    Some(Ok(Message::Text(resp))) => Some(resp),
+                                    Some(Err(e)) => {
+                                        tracing::error!("Error receiving message: {}", e);
+                                        return Err(AppError::WebSocketError(e.to_string()));
+                                    }
+                                    _ => None,
+                                },
+                                Err(e) => return Err(AppError::WebSocketError(e.to_string())),
+                            }
+                        };
+
+                        if let Some(resp) = msg {
+                            if let Ok(v) = serde_json::from_str::<Value>(&resp) {
+                                if v.get("id").and_then(|id| id.as_u64())
+                                    == Some(response_id as u64)
+                                    && v.get("result").is_some()
+                                {
+                                    // Update state
+                                    {
+                                        let mut pools = self.subscribed_pools.write().await;
+                                        pools.insert(pubkey, pool_for_async.clone());
+                                    }
+                                    {
+                                        let mut client_subs =
+                                            self.client_subscriptions.write().await;
+                                        client_subs
+                                            .entry(token_address_for_async.clone())
+                                            .or_insert_with(HashSet::new)
+                                            .insert(client_id_for_async.clone());
+                                    }
+                                    tracing::info!(
+                                        "Successfully completed subscription setup for {}",
+                                        token_address_for_async
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(AppError::WebSocketError(
+                        "Timeout waiting for confirmation".to_string(),
+                    ))
+                })
+                .await
+                {
+                    Ok(Ok(())) => break 'retry, // Success!
+                    Ok(Err(e)) => {
+                        tracing::error!("Failed to get subscription confirmation: {}", e);
+                    }
+                    Err(_) => {
+                        tracing::error!("Timeout waiting for subscription confirmation");
+                    }
+                }
+
+                if attempts < MAX_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+
+        tracing::info!("Completed batch_subscribe");
+        Ok(())
+    }
+
+    pub async fn recover_subscriptions(&self) -> Result<(), AppError> {
+        let pools = self.subscribed_pools.read().await;
+        let mut manager = self.connection_manager.write().await;
+        let connection = manager.ensure_connection().await?;
+
+        for (_, pool) in pools.iter() {
+            tracing::info!("Recovering subscription for pool: {}", pool.address);
+            self.subscribe_to_pool_updates(connection, &pool.address)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) -> Result<(), AppError> {
+        // Clear subscriptions first
+        {
+            let mut pools = self.subscribed_pools.write().await;
+            pools.clear();
+
+            let mut client_subs = self.client_subscriptions.write().await;
+            client_subs.clear();
+        }
+
+        // Close WebSocket connection
+        self.connection_manager.write().await.shutdown().await?;
+
+        Ok(())
     }
 }
