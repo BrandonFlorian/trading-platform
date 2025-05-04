@@ -12,6 +12,7 @@ use crate::{
 const DEFAULT_POOL_SIZE: u32 = 20;
 const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Debug)]
 pub struct RedisPool {
     pool: bb8::Pool<RedisConnectionManager>,
     connection_monitor: Arc<ConnectionMonitor>,

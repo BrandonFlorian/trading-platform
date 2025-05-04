@@ -1,13 +1,7 @@
-use parking_lot::RwLock;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::sync::Arc;
-use tokio::sync::broadcast;
-use trading_common::{
-    error::AppError,
-    models::{PriceUpdate, SolPriceUpdate},
-    redis::RedisPool,
-};
+use trading_common::{error::AppError, models::PriceUpdate, redis::RedisPool};
 
 use crate::raydium::RaydiumPool;
 

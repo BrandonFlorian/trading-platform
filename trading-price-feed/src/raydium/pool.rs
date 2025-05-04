@@ -1,5 +1,5 @@
 use super::PriceData;
-use parking_lot::RwLock;
+
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{program_pack::Pack, pubkey::Pubkey};
 use std::{
@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::sync::RwLock;
 use trading_common::{error::AppError, redis::RedisPool};
 
 #[derive(Debug)]
@@ -145,7 +146,7 @@ impl RaydiumPool {
         }
 
         // Update account data with new balances
-        let mut account_data = self.account_data.write();
+        let mut account_data = self.account_data.write().await;
         *account_data = Some(AccountData {
             base_balance: u64::from_le_bytes(data[0..8].try_into().map_err(
                 |e: std::array::TryFromSliceError| {

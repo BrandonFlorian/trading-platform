@@ -320,20 +320,46 @@ impl ConnectionStatusChange {
     }
 }
 
+/// Price update for a token
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceUpdate {
+    /// Token address (base mint)
     pub token_address: String,
+
+    /// Price in SOL
     pub price_sol: f64,
+
+    /// Price in USD
     pub price_usd: Option<f64>,
-    pub timestamp: i64,
-    pub dex_type: DexType,
-    pub liquidity: Option<f64>,
-    pub liquidity_usd: Option<f64>,
+
+    /// Market cap in USD
     pub market_cap: f64,
+
+    /// Timestamp of update
+    pub timestamp: i64,
+
+    /// DEx type
+    pub dex_type: DexType,
+
+    /// Liquidity in SOL
+    pub liquidity: Option<f64>,
+
+    /// Liquidity in USD
+    pub liquidity_usd: Option<f64>,
+
+    /// Pool address
     pub pool_address: Option<String>,
+
+    /// 24h volume in USD
     pub volume_24h: Option<f64>,
+
+    /// 6h volume in USD
     pub volume_6h: Option<f64>,
+
+    /// 1h volume in USD
     pub volume_1h: Option<f64>,
+
+    /// 5m volume in USD
     pub volume_5m: Option<f64>,
 }
 

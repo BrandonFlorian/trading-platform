@@ -1,0 +1,490 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+</notes>
+
+<additional_info>
+
+</additional_info>
+
+</file_summary>
+
+<directory_structure>
+cache.rs
+connection.rs
+mod.rs
+pubsub.rs
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="cache.rs">
+use super::RedisPool;
+use crate::error::AppError;
+use bb8_redis::redis::AsyncCommands;
+use solana_sdk::pubkey::Pubkey;
+use std::time::Duration;
+
+pub struct CacheConfig {
+    pub sol_price_ttl: Duration,
+    pub token_metadata_ttl: Duration,
+    pub pool_data_ttl: Duration,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            sol_price_ttl: Duration::from_secs(2),
+            token_metadata_ttl: Duration::from_secs(3600),
+            pool_data_ttl: Duration::from_secs(30),
+        }
+    }
+}
+
+impl RedisPool {
+    pub async fn get_token_decimals(&self, mint: &Pubkey) -> Result<Option<u8>, AppError> {
+        let key = format!("token:{}:decimals", mint);
+        let mut conn = self.get_connection().await?;
+
+        conn.get(&key)
+            .await
+            .map_err(|e| AppError::RedisError(e.to_string()))
+    }
+
+    pub async fn set_token_decimals(
+        &self,
+        mint: &Pubkey,
+        decimals: u8,
+        ttl: Duration,
+    ) -> Result<(), AppError> {
+        let key = format!("token:{}:decimals", mint);
+        let mut conn = self.get_connection().await?;
+
+        conn.set_ex(&key, decimals, ttl.as_secs())
+            .await
+            .map_err(|e| AppError::RedisError(e.to_string()))
+    }
+
+    pub async fn get_sol_price(&self) -> Result<Option<f64>, AppError> {
+        tracing::info!("Getting SOL price from Redis cache");
+        let mut conn = self.get_connection().await?;
+
+        let price: Option<f64> = conn
+            .get("sol:price")
+            .await
+            .map_err(|e| AppError::RedisError(e.to_string()))?;
+
+        tracing::info!("Retrieved SOL price from Redis cache: {:?}", price);
+        Ok(price)
+    }
+
+    pub async fn set_sol_price(&self, price: f64, ttl: Duration) -> Result<(), AppError> {
+        tracing::info!("Setting SOL price in Redis cache: ${:.2}", price);
+        let mut conn = self.get_connection().await?;
+
+        conn.set_ex("sol:price", price, ttl.as_secs())
+            .await
+            .map_err(|e| AppError::RedisError(e.to_string()))?;
+
+        tracing::info!("Successfully set SOL price in Redis cache");
+        Ok(())
+    }
+
+    pub async fn get_pool_data(&self, pool_address: &Pubkey) -> Result<Option<String>, AppError> {
+        let key = format!("pool:{}:data", pool_address);
+        let mut conn = self.get_connection().await?;
+
+        conn.get(&key)
+            .await
+            .map_err(|e| AppError::RedisError(e.to_string()))
+    }
+
+    pub async fn set_pool_data(
+        &self,
+        pool_address: &Pubkey,
+        data: &str,
+        ttl: Duration,
+    ) -> Result<(), AppError> {
+        let key = format!("pool:{}:data", pool_address);
+        let mut conn = self.get_connection().await?;
+
+        conn.set_ex(&key, data, ttl.as_secs())
+            .await
+            .map_err(|e| AppError::RedisError(e.to_string()))
+    }
+}
+</file>
+
+<file path="connection.rs">
+use bb8_redis::{bb8, redis::AsyncCommands, RedisConnectionManager};
+use redis::Client;
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::{
+    error::AppError,
+    models::{ConnectionStatus, ConnectionType},
+    ConnectionMonitor,
+};
+
+const DEFAULT_POOL_SIZE: u32 = 20;
+const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug)]
+pub struct RedisPool {
+    pool: bb8::Pool<RedisConnectionManager>,
+    connection_monitor: Arc<ConnectionMonitor>,
+    connection_url: String,
+}
+
+impl RedisPool {
+    pub async fn new(
+        redis_url: &str,
+        connection_monitor: Arc<ConnectionMonitor>,
+    ) -> Result<Self, AppError> {
+        let redis_url = Self::ensure_resp3_protocol(redis_url);
+        tracing::info!("Initializing Redis connection pool at {}", redis_url);
+
+        let manager = RedisConnectionManager::new(redis_url.clone())
+            .map_err(|e| AppError::RedisError(format!("Failed to create Redis manager: {}", e)))?;
+
+        let pool = bb8::Pool::builder()
+            .max_size(DEFAULT_POOL_SIZE)
+            .connection_timeout(DEFAULT_CONNECTION_TIMEOUT)
+            .build(manager)
+            .await
+            .map_err(|e| {
+                AppError::RedisError(format!("Failed to create connection pool: {}", e))
+            })?;
+
+        // Test the connection
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| AppError::RedisError(format!("Failed to get connection: {}", e)))?;
+
+        let ping: String = conn
+            .ping()
+            .await
+            .map_err(|e| AppError::RedisError(format!("Failed to ping Redis: {}", e)))?;
+
+        if ping != "PONG" {
+            return Err(AppError::RedisError(
+                "Failed to connect to Redis".to_string(),
+            ));
+        }
+
+        connection_monitor
+            .update_status(ConnectionType::Redis, ConnectionStatus::Connected, None)
+            .await;
+
+        Ok(Self {
+            pool: pool.clone(),
+            connection_monitor,
+            connection_url: redis_url,
+        })
+    }
+
+    fn ensure_resp3_protocol(url: &str) -> String {
+        if !url.contains("protocol=resp3") {
+            if url.contains('?') {
+                format!("{}&protocol=resp3", url)
+            } else {
+                format!("{}?protocol=resp3", url)
+            }
+        } else {
+            url.to_string()
+        }
+    }
+
+    pub async fn get_connection(
+        &self,
+    ) -> Result<bb8::PooledConnection<'_, RedisConnectionManager>, AppError> {
+        self.pool
+            .get()
+            .await
+            .map_err(|e| AppError::RedisError(format!("Failed to get connection from pool: {}", e)))
+    }
+
+    // Create a dedicated PubSub connection using the modern multiplexed approach
+    pub async fn subscribe(&self, channel: &str) -> Result<redis::aio::PubSub, AppError> {
+        let client = Client::open(self.connection_url.clone())
+            .map_err(|e| AppError::RedisError(format!("Failed to create Redis client: {}", e)))?;
+
+        // Get a dedicated PubSub connection
+        let mut pubsub = client
+            .get_async_pubsub()
+            .await
+            .map_err(|e| AppError::RedisError(format!("Failed to get PubSub connection: {}", e)))?;
+
+        // Subscribe to the channel
+        pubsub
+            .subscribe(channel)
+            .await
+            .map_err(|e| AppError::RedisError(format!("Failed to subscribe to channel: {}", e)))?;
+
+        Ok(pubsub)
+    }
+
+    // Normal pool operations
+    // pub async fn get_token_decimals(&self, mint: &str) -> Result<Option<u8>, AppError> {
+    //     let mut conn = self.get_connection().await?;
+    //     let key = format!("token:{}:decimals", mint);
+
+    //     conn.get(&key)
+    //         .await
+    //         .map_err(|e| AppError::RedisError(format!("Failed to get token decimals: {}", e)))
+    // }
+
+    // pub async fn set_token_decimals(
+    //     &self,
+    //     mint: &str,
+    //     decimals: u8,
+    //     ttl: Duration,
+    // ) -> Result<(), AppError> {
+    //     let mut conn = self.get_connection().await?;
+    //     let key = format!("token:{}:decimals", mint);
+
+    //     conn.set_ex(&key, decimals, ttl.as_secs())
+    //         .await
+    //         .map_err(|e| AppError::RedisError(format!("Failed to set token decimals: {}", e)))
+    // }
+
+    pub async fn publish<T: serde::Serialize>(
+        &self,
+        channel: &str,
+        message: &T,
+    ) -> Result<(), AppError> {
+        let mut conn = self.get_connection().await?;
+        let payload = serde_json::to_string(message)
+            .map_err(|e| AppError::JsonParseError(format!("Failed to serialize message: {}", e)))?;
+
+        conn.publish(channel, payload)
+            .await
+            .map_err(|e| AppError::RedisError(format!("Failed to publish message: {}", e)))
+    }
+
+    pub async fn is_healthy(&self) -> bool {
+        if let Ok(mut conn) = self.get_connection().await {
+            match conn.ping::<String>().await {
+                Ok(response) => response == "PONG",
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+}
+</file>
+
+<file path="mod.rs">
+mod cache;
+mod connection;
+mod pubsub;
+
+pub use cache::CacheConfig;
+pub use connection::RedisPool;
+</file>
+
+<file path="pubsub.rs">
+use super::RedisPool;
+use crate::{
+    constants::{
+        SETTINGS_CHANNEL, SOL_PRICE_CHANNEL, TOKEN_PRICE_CHANNEL, TRACKED_WALLETS_CHANNEL,
+    },
+    error::AppError,
+    models::{CopyTradeSettings, PriceUpdate, SolPriceUpdate, WalletStateChange},
+};
+use futures_util::StreamExt;
+use serde_json::json;
+use std::time::Duration;
+use tokio::sync::broadcast;
+const RECONNECT_DELAY: Duration = Duration::from_secs(1);
+const MAX_RETRIES: u32 = 5;
+
+impl RedisPool {
+    // Publishing methods
+    pub async fn publish_with_retry<T: serde::Serialize>(
+        &self,
+        channel: &str,
+        payload: &T,
+    ) -> Result<(), AppError> {
+        let msg = serde_json::to_string(payload)
+            .map_err(|e| AppError::JsonParseError(format!("Failed to serialize payload: {}", e)))?;
+
+        let mut retries = 0;
+        loop {
+            match self.publish(channel, &msg).await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if retries >= MAX_RETRIES {
+                        return Err(AppError::RedisError(format!(
+                            "Failed to publish after {} retries: {}",
+                            MAX_RETRIES, e
+                        )));
+                    }
+                    retries += 1;
+                    tokio::time::sleep(RECONNECT_DELAY).await;
+                }
+            }
+        }
+    }
+
+    pub async fn publish_tracked_wallet_update(
+        &self,
+        wallet: &str,
+        action: &str,
+    ) -> Result<(), AppError> {
+        let payload = json!({
+            "wallet_address": wallet,
+            "action": action,
+        });
+        self.publish_with_retry(TRACKED_WALLETS_CHANNEL, &payload)
+            .await
+    }
+
+    pub async fn publish_settings_update(
+        &self,
+        settings: &CopyTradeSettings,
+        action: &str,
+    ) -> Result<(), AppError> {
+        let payload = json!({
+            "settings": settings,
+            "action": action,
+        });
+        self.publish_with_retry(SETTINGS_CHANNEL, &payload).await
+    }
+
+    pub async fn publish_price_update(&self, price_update: &PriceUpdate) -> Result<(), AppError> {
+        self.publish_with_retry(TOKEN_PRICE_CHANNEL, price_update)
+            .await
+    }
+
+    pub async fn publish_sol_price_update(
+        &self,
+        price_update: &SolPriceUpdate,
+    ) -> Result<(), AppError> {
+        tracing::info!(
+            "Publishing SOL price update: ${:.2}",
+            price_update.price_usd
+        );
+
+        // Update the cache first
+        self.set_sol_price(price_update.price_usd, Duration::from_secs(60))
+            .await?;
+
+        // Then publish the update
+        self.publish_with_retry(SOL_PRICE_CHANNEL, price_update)
+            .await?;
+
+        tracing::info!("Published SOL price update: ${:.2}", price_update.price_usd);
+        Ok(())
+    }
+
+    // Subscription methods
+    pub async fn subscribe_to_updates(&self) -> Result<broadcast::Receiver<PriceUpdate>, AppError> {
+        let (tx, rx) = broadcast::channel(100);
+        let mut pubsub = self.subscribe(TOKEN_PRICE_CHANNEL).await?;
+
+        tokio::spawn(async move {
+            let mut msg_stream = pubsub.on_message();
+            while let Some(msg) = msg_stream.next().await {
+                if let Ok(payload) = redis::from_redis_value::<String>(&msg.get_payload().unwrap())
+                {
+                    if let Ok(update) = serde_json::from_str::<PriceUpdate>(&payload) {
+                        if let Err(e) = tx.send(update) {
+                            tracing::error!("Failed to forward price update: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    pub async fn subscribe_to_sol_price(
+        &self,
+    ) -> Result<broadcast::Receiver<SolPriceUpdate>, AppError> {
+        let (tx, rx) = broadcast::channel(100);
+        let mut pubsub = self.subscribe(SOL_PRICE_CHANNEL).await?;
+
+        tokio::spawn(async move {
+            let mut msg_stream = pubsub.on_message();
+            while let Some(msg) = msg_stream.next().await {
+                if let Ok(payload) = redis::from_redis_value::<String>(&msg.get_payload().unwrap())
+                {
+                    if let Ok(update) = serde_json::from_str::<SolPriceUpdate>(&payload) {
+                        if let Err(e) = tx.send(update) {
+                            tracing::error!("Failed to forward SOL price update: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    pub async fn subscribe_to_wallet_updates(
+        &self,
+    ) -> Result<broadcast::Receiver<WalletStateChange>, AppError> {
+        let (tx, rx) = broadcast::channel(100);
+        let mut pubsub = self.subscribe(TRACKED_WALLETS_CHANNEL).await?;
+
+        tokio::spawn(async move {
+            let mut msg_stream = pubsub.on_message();
+            while let Some(msg) = msg_stream.next().await {
+                if let Ok(payload) = redis::from_redis_value::<String>(&msg.get_payload().unwrap())
+                {
+                    if let Ok(update) = serde_json::from_str::<WalletStateChange>(&payload) {
+                        if let Err(e) = tx.send(update) {
+                            tracing::error!("Failed to forward wallet update: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+}
+</file>
+
+</files>

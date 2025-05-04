@@ -1,87 +1,142 @@
-mod config;
-mod pool_monitor_websocket;
-mod price_calculator;
-
+// src/main.rs
+mod actors;
+mod gateway;
+mod messages;
+mod models;
 mod raydium;
-mod routes;
-mod service;
 
-use anyhow::{Context, Result};
+use actors::SubscriptionCoordinator;
 use dotenv::dotenv;
-use solana_client::rpc_client::RpcClient;
-use std::{net::SocketAddr, sync::Arc};
-use tokio::{net::TcpListener, signal};
-use trading_common::{event_system::EventSystem, ConnectionMonitor};
 
-use crate::{config::PriceFeedConfig, service::PriceFeedService};
+use models::CoordinatorCommand;
+use solana_client::rpc_client::RpcClient;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::signal;
+use tokio::sync::oneshot;
+use trading_common::error::AppError;
+use trading_common::redis::RedisPool;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), AppError> {
+    // Load environment variables
     dotenv().ok();
 
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
-    // Load configuration from environment
-    let rpc_url =
-        std::env::var("SOLANA_RPC_HTTP_URL").context("SOLANA_RPC_HTTP_URL must be set")?;
-    let redis_url = std::env::var("REDIS_URL").context("REDIS_URL must be set")?;
+    // Get configuration from environment
+    let rpc_url = std::env::var("SOLANA_RPC_HTTP_URL")
+        .map_err(|_| AppError::InternalError("SOLANA_RPC_HTTP_URL not set".to_string()))?;
+    let redis_url = std::env::var("REDIS_URL")
+        .map_err(|_| AppError::InternalError("REDIS_URL not set".to_string()))?;
+    let port = std::env::var("PRICE_FEED_PORT")
+        .map_err(|_| AppError::InternalError("PRICE_FEED_PORT not set".to_string()))?
+        .parse::<u16>()
+        .map_err(|_| AppError::InternalError("Invalid PRICE_FEED_PORT".to_string()))?;
 
-    // Create RPC client
+    // Create clients
     let rpc_client = Arc::new(RpcClient::new(rpc_url));
+    let connection_monitor = Arc::new(trading_common::ConnectionMonitor::new(Arc::new(
+        trading_common::event_system::EventSystem::new(),
+    )));
+    let redis_client = Arc::new(RedisPool::new(&redis_url, connection_monitor).await?);
 
-    // Create event system
-    let event_system = Arc::new(EventSystem::new());
-    let _event_rx = event_system.subscribe();
+    // Create subscription coordinator
+    let (coordinator, coordinator_tx, price_tx) =
+        SubscriptionCoordinator::new(rpc_client.clone(), redis_client.clone());
 
-    // Create connection monitor
-    let connection_monitor = Arc::new(ConnectionMonitor::new(event_system.clone()));
+    // Start coordinator task
+    let coordinator_handle = tokio::spawn(async move {
+        coordinator.run().await;
+    });
 
-    // Create configuration with correct WebSocket URL
-    let config = PriceFeedConfig::from_env()
-        .context("Failed to create price feed config")?
-        .with_update_interval(std::time::Duration::from_secs(1))
-        .with_cache_duration(std::time::Duration::from_secs(60));
+    // Create router
+    let app = gateway::create_router(coordinator_tx.clone(), price_tx.clone());
 
-    let http_addr = SocketAddr::from(([0, 0, 0, 0], config.http_port));
+    // Create server address
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    // Create service
-    let service = Arc::new(
-        PriceFeedService::new(rpc_client, connection_monitor.clone(), &redis_url, config).await?,
-    );
+    // Create the listener
+    let listener = TcpListener::bind(&addr)
+        .await
+        .map_err(|e| AppError::InternalError(format!("Failed to bind to address: {}", e)))?;
 
-    // Start service
-    service.start().await?;
+    tracing::info!("Starting server on {}", addr);
 
-    // Create router with both HTTP and WebSocket endpoints
-    let app = routes::create_router(service.clone());
+    // Create a shutdown channel
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    // Create and bind TCP listener
-    let listener = TcpListener::bind(http_addr).await?;
-    println!("Server listening on {}", http_addr);
+    // Spawn the server task with shutdown signal
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .map_err(|e| AppError::InternalError(format!("Server error: {}", e)))
+    });
 
-    // Start HTTP and WebSocket server
-    let server = axum::serve(listener, app.into_make_service());
+    // Wait for shutdown signal
+    shutdown_signal().await;
 
-    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    // Send the shutdown signal to the server task
+    let _ = shutdown_tx.send(());
 
-    tokio::select! {
-        result = server => {
-            if let Err(e) = result {
-                eprintln!("Server error: {}", e);
-            }
-        }
-        _ = signal::ctrl_c() => {
-            println!("Received Ctrl+C, initiating shutdown...");
-        }
-        _ = sigterm.recv() => {
-            println!("Received termination signal, initiating shutdown...");
-        }
+    // Wait for server to shut down
+    if let Err(e) = server_task.await {
+        tracing::error!("Error waiting for server task: {}", e);
     }
 
-    // Graceful shutdown
-    service.pool_monitor.stop().await?;
-    println!("Service stopped. Goodbye!");
+    // Shutdown coordinator
+    tracing::info!("Shutting down coordinator");
+    let (tx, rx) = oneshot::channel();
+    if let Err(e) = coordinator_tx
+        .send(CoordinatorCommand::Shutdown { response_tx: tx })
+        .await
+    {
+        tracing::error!("Failed to send shutdown command: {}", e);
+    }
 
+    // Wait for coordinator to shut down
+    if let Err(e) = rx.await {
+        tracing::error!("Failed to receive shutdown response: {}", e);
+    }
+
+    // Wait for coordinator task to finish
+    if let Err(e) = coordinator_handle.await {
+        tracing::error!("Error waiting for coordinator task: {}", e);
+    }
+
+    tracing::info!("Server shut down gracefully");
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("Received Ctrl+C, starting graceful shutdown");
+        }
+        _ = terminate => {
+            tracing::info!("Received SIGTERM, starting graceful shutdown");
+        }
+    }
 }

@@ -134,6 +134,18 @@ pub enum AppError {
 
     #[error("Price not available: {0}")]
     PriceNotAvailable(String),
+
+    #[error("Internal error: {0}")]
+    InternalError(String),
+
+    #[error("Timeout error: {0}")]
+    TimeoutError(String),
+
+    #[error("Channel send error: {0}")]
+    ChannelSendError(String),
+
+    #[error("Channel receive error: {0}")]
+    ChannelReceiveError(String),
 }
 
 impl AppError {
@@ -214,6 +226,10 @@ impl IntoResponse for AppError {
             AppError::SerializationError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::PoolNotFound(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::PriceNotAvailable(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::InternalError(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+            AppError::TimeoutError(err) => (StatusCode::GATEWAY_TIMEOUT, err.to_string()),
+            AppError::ChannelSendError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::ChannelReceiveError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
         };
 
         let body = serde_json::json!({

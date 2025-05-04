@@ -28,6 +28,8 @@ pub enum Event {
     PriceUpdate(PriceUpdateNotification),
     SolPriceUpdate(SolPriceUpdateNotification),
 }
+
+#[derive(Debug)]
 pub struct EventSystem {
     sender: broadcast::Sender<Event>,
 }
