@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
-use parking_lot::{Mutex, RwLock};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::Signer};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::error;
 use trading_common::{
@@ -72,8 +71,6 @@ impl WalletMonitor {
         let user_id = server_keypair.pubkey().to_string();
         println!("Initializing WalletMonitor for user: {}", user_id);
 
-        Self::ensure_user_exists(&supabase_client, &user_id).await?;
-
         let tracked_wallets = Self::fetch_tracked_wallets(&supabase_client)
             .await
             .map_err(|e| {
@@ -104,22 +101,6 @@ impl WalletMonitor {
         })
     }
 
-    async fn ensure_user_exists(
-        supabase_client: &SupabaseClient,
-        user_id: &str,
-    ) -> Result<(), AppError> {
-        let exists = supabase_client.user_exists(user_id).await?;
-
-        if !exists {
-            println!("Creating new user in database");
-            supabase_client.create_user(user_id).await.map_err(|e| {
-                AppError::InitializationError(format!("Failed to create user: {}", e))
-            })?;
-            println!("User created successfully");
-        }
-
-        Ok(())
-    }
 
     pub async fn start(&mut self) -> Result<(), AppError> {
         println!("Starting WalletMonitor...");
@@ -157,7 +138,7 @@ impl WalletMonitor {
                         Event::SettingsUpdate(notification) => {
                             println!("Event - Received settings update: {:?}", notification.data);
                             // Update copy trade settings in memory
-                            if let Some(settings_store) = self.copy_trade_settings.write().as_mut() {
+                            if let Some(settings_store) = self.copy_trade_settings.write().await.as_mut() {
                                 if let Some(existing) = settings_store.iter_mut()
                                     .find(|s| s.tracked_wallet_id == notification.data.tracked_wallet_id)
                                 {
@@ -228,7 +209,7 @@ impl WalletMonitor {
 
             stop_receiver: Arc::clone(&self.stop_receiver),
             copy_trade_settings: Arc::clone(&self.copy_trade_settings),
-            message_receiver: self.message_receiver.lock().take().ok_or_else(|| {
+            message_receiver: self.message_receiver.lock().await.take().ok_or_else(|| {
                 AppError::InitializationError("Message receiver not available".to_string())
             })?,
             server_keypair: get_server_keypair(),
@@ -259,7 +240,7 @@ impl WalletMonitor {
             tokio::select! {
             Some(client_message) = message_receiver.recv() => {
                 println!("Processing message: {}", client_message.signature);
-                let settings = copy_trade_settings.read().clone();
+                let settings = copy_trade_settings.read().await.clone();
                 println!("Current copy trade settings: {:?}", settings);
                 if let Err(e) = Self::handle_transaction(
                     &rpc_client,
@@ -441,6 +422,7 @@ impl WalletMonitor {
 
             let wallet_addresses: Vec<String> = tracked_wallets
                 .read()
+                .await
                 .as_ref()
                 .map(|w| {
                     w.iter()

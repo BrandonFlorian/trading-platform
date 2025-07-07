@@ -66,13 +66,16 @@ async fn main() -> Result<()> {
         WalletClient::connect(wallet_service_url, connection_monitor.clone()).await?;
 
     // Create supabase client
-    let supabase_client = SupabaseClient::new(
+    let mut supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
         event_system.clone(),
     );
+    
+    // Initialize user
+    supabase_client.initialize_user().await?;
 
     // Create rpc client
     let rpc_client = RpcClient::new(rpc_url);

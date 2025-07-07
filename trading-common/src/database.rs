@@ -18,7 +18,8 @@ use std::time::Instant;
 #[derive(Clone)]
 pub struct SupabaseClient {
     client: Postgrest,
-    user_id: String,
+    user_uuid: Option<Uuid>,
+    user_wallet_address: String,
     event_system: Arc<EventSystem>,
 }
 
@@ -27,7 +28,7 @@ impl SupabaseClient {
         url: &str,
         _api_key: &str,
         service_role_key: &str,
-        user_id: &str,
+        user_wallet_address: &str,
         event_system: Arc<EventSystem>,
     ) -> Self {
         println!("New Postgrest client created!");
@@ -37,9 +38,53 @@ impl SupabaseClient {
 
         Self {
             client,
-            user_id: user_id.to_string(),
+            user_uuid: None,
+            user_wallet_address: user_wallet_address.to_string(),
             event_system,
         }
+    }
+
+    pub async fn initialize_user(&mut self) -> Result<(), AppError> {
+        if !self.user_exists(&self.user_wallet_address).await? {
+            let user_uuid = self.create_user(&self.user_wallet_address).await?;
+            self.user_uuid = Some(user_uuid);
+        } else {
+            // Get existing user UUID
+            let user_uuid = self.get_user_uuid(&self.user_wallet_address).await?;
+            self.user_uuid = Some(user_uuid);
+        }
+        Ok(())
+    }
+
+    async fn get_user_uuid(&self, wallet_address: &str) -> Result<Uuid, AppError> {
+        let result = self
+            .client
+            .from("users")
+            .select("id")
+            .eq("wallet_address", wallet_address)
+            .execute()
+            .await
+            .map_err(|e| AppError::PostgrestError(e.to_string()))?;
+
+        let body = result
+            .text()
+            .await
+            .map_err(|e| AppError::RequestError(e.to_string()))?;
+
+        let users: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| {
+            AppError::JsonParseError(format!("Failed to parse user response: {}", e))
+        })?;
+
+        let user = users
+            .first()
+            .ok_or_else(|| AppError::DatabaseError("User not found".to_string()))?;
+
+        let uuid_str = user["id"]
+            .as_str()
+            .ok_or_else(|| AppError::DatabaseError("User ID not found".to_string()))?;
+
+        Uuid::parse_str(uuid_str)
+            .map_err(|e| AppError::DatabaseError(format!("Invalid UUID: {}", e)))
     }
 
     pub async fn user_exists(&self, user_id: &str) -> Result<bool, AppError> {
@@ -173,11 +218,15 @@ impl SupabaseClient {
     }
 
     pub async fn get_tracked_wallets(&self) -> Result<Vec<TrackedWallet>, AppError> {
+        let user_uuid = self.user_uuid.ok_or_else(|| {
+            AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+        })?;
+        
         let resp = self
             .client
             .from("tracked_wallets")
             .select("*")
-            .eq("user_id", &self.user_id)
+            .eq("user_id", user_uuid.to_string())
             .execute()
             .await
             .map_err(|e| AppError::PostgrestError(e.to_string()))?;
@@ -203,10 +252,12 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
-            wallet.user_id = Some(self.user_id.clone());
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
 
             let insert_data = serde_json::json!({
-                "user_id": wallet.user_id,
+                "user_id": user_uuid,
                 "wallet_address": wallet.wallet_address,
                 "is_active": wallet.is_active
             });
@@ -253,7 +304,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "insert",
                     "table": "tracked_wallets",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "wallet_address": wallet.wallet_address,
                     "is_active": wallet.is_active,
                     "created_at": Utc::now()
@@ -268,11 +319,15 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("tracked_wallets")
                 .update(json!({"is_active": false}).to_string())
-                .eq("user_id", &self.user_id)
+                .eq("user_id", user_uuid.to_string())
                 .eq("wallet_address", wallet_address)
                 .execute()
                 .await
@@ -306,7 +361,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "update",
                     "table": "tracked_wallets",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "wallet_address": wallet_address,
                     "is_active": false
                 }),
@@ -320,11 +375,15 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("tracked_wallets")
                 .update(json!({"is_active": true}).to_string())
-                .eq("user_id", &self.user_id)
+                .eq("user_id", user_uuid.to_string())
                 .eq("wallet_address", wallet_address)
                 .execute()
                 .await
@@ -358,7 +417,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "update",
                     "table": "tracked_wallets",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "wallet_address": wallet_address,
                     "is_active": true
                 }),
@@ -372,11 +431,15 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("tracked_wallets")
                 .delete()
-                .eq("user_id", &self.user_id)
+                .eq("user_id", user_uuid.to_string())
                 .eq("wallet_address", wallet_address)
                 .execute()
                 .await
@@ -424,7 +487,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "delete",
                     "table": "tracked_wallets",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "wallet_address": wallet_address
                 }),
             );
@@ -437,7 +500,11 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
-            wallet.user_id = Some(self.user_id.clone());
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
+            wallet.user_id = Some(user_uuid);
 
             let wallet_id = wallet.id.ok_or_else(|| {
                 AppError::BadRequest("Wallet ID is required for update".to_string())
@@ -455,7 +522,7 @@ impl SupabaseClient {
                     })
                     .to_string(),
                 )
-                .eq("user_id", &self.user_id)
+                .eq("user_id", user_uuid.to_string())
                 .eq("id", wallet_id.to_string())
                 .execute()
                 .await
@@ -489,7 +556,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "update",
                     "table": "tracked_wallets",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "wallet_address": wallet.wallet_address,
                     "is_active": wallet.is_active
                 }),
@@ -500,11 +567,15 @@ impl SupabaseClient {
     }
 
     pub async fn get_copy_trade_settings(&self) -> Result<Vec<CopyTradeSettings>, AppError> {
+        let user_uuid = self.user_uuid.ok_or_else(|| {
+            AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+        })?;
+        
         let resp = self
             .client
             .from("copy_trade_settings")
             .select("*")
-            .eq("user_id", &self.user_id)
+            .eq("user_id", user_uuid.to_string())
             .execute()
             .await
             .map_err(|e| AppError::PostgrestError(e.to_string()))?;
@@ -533,12 +604,16 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("copy_trade_settings")
                 .insert(
                     json!({
-                        "user_id": self.user_id,
+                        "user_id": user_uuid,
                         "tracked_wallet_id": settings.tracked_wallet_id,
                         "is_enabled": settings.is_enabled,
                         "trade_amount_sol": settings.trade_amount_sol,
@@ -583,7 +658,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "insert",
                     "table": "copy_trade_settings",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "tracked_wallet_id": settings.tracked_wallet_id,
                     "is_enabled": settings.is_enabled
                 }),
@@ -600,6 +675,10 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("copy_trade_settings")
@@ -617,7 +696,7 @@ impl SupabaseClient {
                     })
                     .to_string(),
                 )
-                .eq("user_id", &self.user_id)
+                .eq("user_id", user_uuid.to_string())
                 .eq("tracked_wallet_id", settings.tracked_wallet_id.to_string())
                 .execute()
                 .await
@@ -650,7 +729,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "update",
                     "table": "copy_trade_settings",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "tracked_wallet_id": settings.tracked_wallet_id,
                     "is_enabled": settings.is_enabled,
                     "max_open_positions": settings.max_open_positions,
@@ -670,11 +749,15 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("copy_trade_settings")
                 .delete()
-                .eq("user_id", &self.user_id)
+                .eq("user_id", user_uuid.to_string())
                 .eq("tracked_wallet_id", tracked_wallet_id.to_string())
                 .execute()
                 .await
@@ -704,7 +787,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "delete",
                     "table": "copy_trade_settings",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "tracked_wallet_id": tracked_wallet_id
                 }),
             );
@@ -714,11 +797,15 @@ impl SupabaseClient {
     }
 
     pub async fn get_transaction_history(&self) -> Result<Vec<TransactionLog>, AppError> {
+        let user_uuid = self.user_uuid.ok_or_else(|| {
+            AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+        })?;
+        
         let resp = self
             .client
             .from("transactions")
             .select("*")
-            .eq("user_id", &self.user_id)
+            .eq("user_id", user_uuid.to_string())
             .execute()
             .await
             .map_err(|e| AppError::PostgrestError(e.to_string()))?;
@@ -739,13 +826,17 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("transactions")
                 .insert(
                     json!({
                         "id": transaction.id,
-                        "user_id": self.user_id,
+                        "user_id": user_uuid,
                         "tracked_wallet_id": transaction.tracked_wallet_id,
                         "signature": transaction.signature,
                         "transaction_type": transaction.transaction_type,
@@ -801,7 +892,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "insert",
                     "table": "transactions",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "transaction_id": transaction.id
                 }),
             );
@@ -811,11 +902,15 @@ impl SupabaseClient {
     }
 
     pub async fn get_watchlists(&self) -> Result<Vec<WatchlistWithTokens>, AppError> {
+        let user_uuid = self.user_uuid.ok_or_else(|| {
+            AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+        })?;
+        
         let resp = self
             .client
             .from("watchlists")
             .select("*")
-            .eq("user_id", &self.user_id)
+            .eq("user_id", user_uuid.to_string())
             .execute()
             .await
             .map_err(|e| AppError::PostgrestError(e.to_string()))?;
@@ -869,11 +964,15 @@ impl SupabaseClient {
     }
 
     pub async fn get_watchlist(&self, watchlist_id: Uuid) -> Result<WatchlistWithTokens, AppError> {
+        let user_uuid = self.user_uuid.ok_or_else(|| {
+            AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+        })?;
+        
         let resp = self
             .client
             .from("watchlists")
             .select("*")
-            .eq("user_id", &self.user_id)
+            .eq("user_id", user_uuid.to_string())
             .eq("id", watchlist_id.to_string())
             .execute()
             .await
@@ -924,14 +1023,16 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
-            watchlist.user_id = Some(self.user_id.clone());
-
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("watchlists")
                 .insert(
                     json!({
-                        "user_id": watchlist.user_id,
+                        "user_id": user_uuid,
                         "name": watchlist.name,
                         "description": watchlist.description
                     })
@@ -972,7 +1073,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "insert",
                     "table": "watchlists",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "watchlist_name": watchlist.name,
                     "created_at": Utc::now()
                 }),
@@ -1007,6 +1108,10 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let watchlist_id = watchlist.id.ok_or_else(|| {
                 AppError::BadRequest("Watchlist ID is required for update".to_string())
             })?;
@@ -1021,7 +1126,7 @@ impl SupabaseClient {
                     })
                     .to_string(),
                 )
-                .eq("user_id", &self.user_id)
+                .eq("user_id", user_uuid.to_string())
                 .eq("id", watchlist_id.to_string())
                 .execute()
                 .await
@@ -1057,7 +1162,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "update",
                     "table": "watchlists",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "watchlist_id": watchlist.id,
                     "updated_at": Utc::now()
                 }),
@@ -1071,11 +1176,15 @@ impl SupabaseClient {
         let start_time = Instant::now();
 
         let operation_result = async {
+            let user_uuid = self.user_uuid.ok_or_else(|| {
+                AppError::DatabaseError("User not initialized. Call initialize_user() first.".to_string())
+            })?;
+            
             let resp = self
                 .client
                 .from("watchlists")
                 .delete()
-                .eq("user_id", &self.user_id)
+                .eq("user_id", user_uuid.to_string())
                 .eq("id", watchlist_id.to_string())
                 .execute()
                 .await
@@ -1123,7 +1232,7 @@ impl SupabaseClient {
                 json!({
                     "operation": "delete",
                     "table": "watchlists",
-                    "user_id": self.user_id,
+                    "user_wallet_address": self.user_wallet_address,
                     "watchlist_id": watchlist_id
                 }),
             );

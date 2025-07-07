@@ -1,12 +1,11 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use chrono::Utc;
-use parking_lot::Mutex;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{str::FromStr, sync::Arc};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use trading_common::{
     error::AppError,
     event_system::EventSystem,
@@ -85,7 +84,7 @@ impl PriceMonitor {
     }
 
     pub async fn start_monitoring(&self) -> Result<(), AppError> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock().await;
         if state.is_running.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -161,7 +160,7 @@ impl PriceMonitor {
     }
 
     pub async fn stop_monitoring(&self) -> Result<(), AppError> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock().await;
         state.is_running.store(false, Ordering::SeqCst);
 
         if let Some(handle) = state.task_handle.take() {

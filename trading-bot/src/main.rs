@@ -33,14 +33,16 @@ async fn main() -> Result<()> {
 
     // Supabase
     let supabase_url = env::var("SUPABASE_URL").context("SUPABASE_URL must be set")?;
+    println!("Supabase URL: {}", supabase_url);
     let supabase_key =
         env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
+    println!("Supabase anon public key: {}", supabase_key);
     let supabase_service_role_key =
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
-
+    println!("Supabase service role key: {}", supabase_service_role_key);
     // Redis
     let redis_url = env::var("REDIS_URL").context("REDIS_URL must be set")?;
-
+    println!("Redis URL: {}", redis_url);
     // Event system
     let event_system = Arc::new(EventSystem::new());
 
@@ -67,19 +69,31 @@ async fn main() -> Result<()> {
     let wallet_addr =
         std::env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
     let wallet_client =
-        Arc::new(WalletClient::connect(wallet_addr, connection_monitor.clone()).await?);
+        Arc::new(WalletClient::connect(wallet_addr.clone(), connection_monitor.clone()).await?);
+
+    println!(
+        "Wallet client connected successfully with address: {}",
+        wallet_addr
+    );
 
     // Supabase client
-    let supabase_client = Arc::new(SupabaseClient::new(
+    let mut supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
         event_system.clone(),
-    ));
+    );
+    
+    // Initialize user
+    supabase_client.initialize_user().await?;
+    let supabase_client = Arc::new(supabase_client);
 
+    println!("Supabase client initialized successfully");
     // RPC client
     let rpc_client = Arc::new(RpcClient::new(rpc_http_url));
+
+    println!("RPC client initialized successfully");
 
     // Wallet monitor
     let mut monitor = WalletMonitor::new(
@@ -93,6 +107,8 @@ async fn main() -> Result<()> {
     )
     .await?;
 
+    println!("Wallet monitor initialized successfully");
+
     // WebSocket server
     let websocket_port = env::var("WS_PORT")
         .unwrap_or_else(|_| "3001".to_string())
@@ -104,6 +120,8 @@ async fn main() -> Result<()> {
         websocket_port,
         Arc::clone(&connection_monitor),
     );
+
+    println!("WebSocket server initialized successfully");
 
     //Start WebSocket server
     tokio::spawn(async move {

@@ -3,3 +3,7 @@ Cargo.lock
 /target
 
 trading-common/src/generated/wallet.rs
+
+CLAUDE.md
+
+supabase/

@@ -1,6 +1,5 @@
-use parking_lot::RwLock;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, RwLock};
 use trading_common::{
     error::AppError,
     event_system::{Event, EventSystem},
@@ -74,7 +73,7 @@ impl SolPriceFeedService {
                     tracing::info!("Received price update: ${:.2}", price_update.price_usd);
 
                     // Update current price
-                    *current_price.write() = Some(price_update.clone());
+                    *current_price.write().await = Some(price_update.clone());
 
                     // Publish to Redis
                     let price_json = serde_json::to_string(&price_update).unwrap();
@@ -100,7 +99,7 @@ impl SolPriceFeedService {
         });
 
         // Store task handle
-        *self.price_task.write() = Some(task);
+        *self.price_task.write().await = Some(task);
 
         self.connection_monitor
             .update_status(ConnectionType::WebSocket, ConnectionStatus::Connected, None)
@@ -114,7 +113,7 @@ impl SolPriceFeedService {
         self.price_monitor.stop_monitoring().await?;
 
         // Abort the price update task if it exists
-        if let Some(task) = self.price_task.write().take() {
+        if let Some(task) = self.price_task.write().await.take() {
             task.abort();
         }
 
@@ -129,8 +128,28 @@ impl SolPriceFeedService {
         Ok(())
     }
 
-    pub fn get_current_price(&self) -> Option<SolPriceUpdate> {
-        self.current_price.read().clone()
+    /// Get the current price (async version - preferred)
+    pub async fn get_current_price(&self) -> Option<SolPriceUpdate> {
+        self.current_price.read().await.clone()
+    }
+
+    /// Try to get the current price without blocking (non-blocking version)
+    /// Returns None if the lock is currently held by another task
+    pub fn try_get_current_price(&self) -> Option<SolPriceUpdate> {
+        self.current_price.try_read().ok()?.clone()
+    }
+
+    /// Get the current price with a timeout (fallback for edge cases)
+    pub async fn get_current_price_with_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<SolPriceUpdate>, AppError> {
+        match tokio::time::timeout(timeout, self.current_price.read()).await {
+            Ok(guard) => Ok(guard.clone()),
+            Err(_) => Err(AppError::TimeoutError(
+                "Timeout waiting for price lock".to_string(),
+            )),
+        }
     }
 
     pub fn subscribe_to_updates(&self) -> broadcast::Receiver<SolPriceUpdate> {
