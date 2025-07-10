@@ -290,9 +290,9 @@ impl WebSocketManager {
                     } else if json.get("method").and_then(|m| m.as_str()) == Some("accountNotification") {
                         // Handle accountNotification messages
                         // According to Solana docs, these should have a subscription field in params
-                        tracing::info!(
-                            "🔔 ACCOUNT NOTIFICATION: method=accountNotification, full message: {}",
-                            json.to_string().chars().take(300).collect::<String>()
+                        tracing::debug!(
+                            "Received account notification: {}",
+                            json.to_string().chars().take(100).collect::<String>()
                         );
                         
                         // Let's check if there's a subscription field - could be string or number
@@ -301,8 +301,8 @@ impl WebSocketManager {
                             .or_else(|| params.get("subscription").and_then(|s| s.as_u64().map(|n| n.to_string())));
                         
                         if let Some(subscription) = subscription_id {
-                            tracing::info!(
-                                "Found subscription ID in accountNotification: {}",
+                            tracing::debug!(
+                                "Routing account notification to subscription: {}",
                                 subscription
                             );
                             let routes = subscription_routes.read().await;
@@ -317,8 +317,8 @@ impl WebSocketManager {
                                     tracing::error!("Failed to forward account notification: {}", e);
                                 }
                             } else {
-                                tracing::warn!(
-                                    "Received account notification for unknown subscription: {}",
+                                tracing::debug!(
+                                    "Received account notification for unknown subscription: {} (likely stale)",
                                     subscription
                                 );
                             }

@@ -4,9 +4,7 @@ use trading_common::{error::AppError, redis::RedisPool};
 use solana_client::rpc_client::RpcClient;
 use std::sync::Arc;
 use std::time::Duration;
-use borsh::BorshDeserialize;
 
-use super::types::PoolState;
 
 /// Simplified Raydium pool structure for vault monitoring
 #[derive(Debug, Clone)]
@@ -55,8 +53,8 @@ impl SimpleRaydiumPool {
             Pubkey::new_from_array(bytes)
         };
 
-        tracing::info!(
-            "🏊 Parsed Raydium pool: base_mint={}, quote_mint={}, base_vault={}, quote_vault={}",
+        tracing::debug!(
+            "Parsed Raydium pool: base_mint={}, quote_mint={}, base_vault={}, quote_vault={}",
             base_mint,
             quote_mint,
             base_vault,

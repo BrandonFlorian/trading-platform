@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, RwLock};
 use trading_common::error::AppError;
 
 use super::{
-    PoolMonitorState, SubscriptionRoute, VaultBalance, VaultPriceUpdate, VaultSubscription,
+    PoolMonitorState, SubscriptionRoute, VaultBalance, VaultPriceUpdate,
     VaultType, WebSocketManager,
 };
 
@@ -156,28 +156,32 @@ impl VaultSubscriber {
             token_account.owner
         );
 
-        // Debug: Compare with expected vault addresses and mints
-        let pool_state = {
-            let pool_states = self.pool_states.read().await;
-            pool_states.get(&token_address).cloned()
-        };
-        
-        if let Some(pool_state) = pool_state {
-            let expected_mint = if vault_address == pool_state.base_vault {
-                pool_state.token_address.clone()
-            } else if vault_address == pool_state.quote_vault {
-                "So11111111111111111111111111111111111111112".to_string()
-            } else {
-                "Unknown".to_string()
+        // Debug logging for development (can be removed in production)
+        #[cfg(debug_assertions)]
+        {
+            let pool_state = {
+                let pool_states = self.pool_states.read().await;
+                pool_states.get(&token_address).cloned()
             };
             
-            tracing::info!(
-                "🔍 Vault debug - Address: {}, Expected mint: {}, Actual mint: {}, Match: {}",
-                vault_address,
-                expected_mint,
-                token_account.mint,
-                expected_mint == token_account.mint.to_string()
-            );
+            if let Some(pool_state) = pool_state {
+                let expected_mint = if vault_address == pool_state.base_vault {
+                    pool_state.token_address.clone()
+                } else if vault_address == pool_state.quote_vault {
+                    "So11111111111111111111111111111111111111112".to_string()
+                } else {
+                    "Unknown".to_string()
+                };
+                
+                if expected_mint != token_account.mint.to_string() {
+                    tracing::warn!(
+                        "Vault mint mismatch - Address: {}, Expected: {}, Actual: {}",
+                        vault_address,
+                        expected_mint,
+                        token_account.mint
+                    );
+                }
+            }
         }
         
         // Update cached balance

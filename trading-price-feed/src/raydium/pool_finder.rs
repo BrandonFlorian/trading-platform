@@ -116,8 +116,8 @@ impl RaydiumPoolFinder {
         let memcmp = Memcmp::new(432, MemcmpEncodedBytes::Base58(token_pubkey.to_string()));
         let filters = vec![RpcFilterType::DataSize(752), RpcFilterType::Memcmp(memcmp)];
 
-        tracing::info!(
-            "🔍 RPC Query: Looking for pools with data_size=752, memcmp at offset 432 for token {}",
+        tracing::debug!(
+            "Querying pools for token {} with memcmp at offset 432",
             token_pubkey
         );
 
@@ -139,9 +139,10 @@ impl RaydiumPoolFinder {
             .get_program_accounts_with_config(&raydium_program, config)
             .map_err(|e| AppError::SolanaRpcError { source: e })?;
 
-        tracing::info!(
-            "🔍 RPC Response: Found {} accounts matching the filter",
-            accounts.len()
+        tracing::debug!(
+            "Found {} pools matching filter for token {}",
+            accounts.len(),
+            token_pubkey
         );
 
         // Track the best pool based on liquidity
@@ -149,32 +150,24 @@ impl RaydiumPoolFinder {
 
         // Find pool with highest liquidity
         for (pubkey, account) in accounts {
-            tracing::info!(
-                "🔍 Processing account: {}, data_length: {}",
+            tracing::debug!(
+                "Processing pool candidate: {}, data_length: {}",
                 pubkey,
                 account.data.len()
             );
             
             if let Ok(mut pool) = SimpleRaydiumPool::from_account_data(&pubkey, &account.data) {
-                tracing::info!(
-                    "✅ Successfully parsed pool: {}, base_mint: {}, quote_mint: {}",
-                    pubkey,
-                    pool.base_mint,
-                    pool.quote_mint
-                );
-                
                 // Verify this is a SOL pool
                 if pool.quote_mint != sol_pubkey {
-                    tracing::info!(
-                        "❌ Skipping pool {} - quote_mint {} is not SOL ({})",
+                    tracing::debug!(
+                        "Skipping non-SOL pool {} (quote_mint: {})",
                         pubkey,
-                        pool.quote_mint,
-                        sol_pubkey
+                        pool.quote_mint
                     );
                     continue;
                 }
 
-                tracing::info!("Loading metadata for pool candidate: {}", pubkey);
+                tracing::debug!("Loading metadata for pool candidate: {}", pubkey);
                 pool.load_metadata(&self.rpc_client, &self.redis_connection)
                     .await?;
 
@@ -186,36 +179,29 @@ impl RaydiumPoolFinder {
 
                 let liquidity = quote_balance.amount.parse::<u64>().unwrap_or(0);
                 
-                tracing::info!(
-                    "💰 Pool {} liquidity: {} SOL (raw: {})",
+                tracing::debug!(
+                    "Pool {} has {} SOL liquidity",
                     pubkey,
-                    liquidity as f64 / 1_000_000_000.0,
-                    liquidity
+                    liquidity as f64 / 1_000_000_000.0
                 );
 
                 // Update best pool if this has higher liquidity
                 match &best_pool {
                     None => {
-                        tracing::info!("🏆 Setting as best pool (first found): {}", pubkey);
+                        tracing::debug!("Setting {} as best pool (first found)", pubkey);
                         best_pool = Some((pool, liquidity));
                     }
-                    Some((current_pool, current_liquidity)) if liquidity > *current_liquidity => {
-                        tracing::info!(
-                            "🏆 New best pool: {} (liquidity: {}) replacing {} (liquidity: {})",
+                    Some((_, current_liquidity)) if liquidity > *current_liquidity => {
+                        tracing::debug!(
+                            "New best pool: {} (liquidity: {} > {})",
                             pubkey,
                             liquidity,
-                            current_pool.address,
                             current_liquidity
                         );
                         best_pool = Some((pool, liquidity));
                     }
                     _ => {
-                        tracing::info!(
-                            "📊 Pool {} has lower liquidity: {} (current best: {})",
-                            pubkey,
-                            liquidity,
-                            best_pool.as_ref().unwrap().1
-                        );
+                        // Keep existing best pool
                     }
                 }
             } else {
@@ -228,7 +214,15 @@ impl RaydiumPoolFinder {
         }
 
         match best_pool {
-            Some((pool, _)) => Ok(pool),
+            Some((pool, liquidity)) => {
+                tracing::info!(
+                    "Selected pool {} for token {} with {} SOL liquidity",
+                    pool.address,
+                    token_address,
+                    liquidity as f64 / 1_000_000_000.0
+                );
+                Ok(pool)
+            },
             None => {
                 self.metrics.write().await.failed_lookups += 1;
                 Err(AppError::PoolNotFound(token_address.to_string()))

@@ -1,6 +1,6 @@
 use solana_client::rpc_client::RpcClient;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 use trading_common::error::AppError;
 use trading_common::models::PriceUpdate;
 use trading_common::redis::RedisPool;
@@ -9,8 +9,8 @@ use crate::models::{PoolCommand, PoolEvent, PoolState};
 use crate::raydium::RaydiumPoolFinder;
 use crate::vault_monitor::{PoolMonitorState, SubscriptionManager};
 
-/// New pool actor that uses vault-based monitoring
-pub struct PoolActorV2 {
+/// Pool actor that uses vault-based monitoring
+pub struct PoolActor {
     token_address: String,
     command_rx: mpsc::Receiver<PoolCommand>,
     event_tx: broadcast::Sender<PoolEvent>,
@@ -21,7 +21,7 @@ pub struct PoolActorV2 {
     price_receiver: Option<broadcast::Receiver<PriceUpdate>>,
 }
 
-impl PoolActorV2 {
+impl PoolActor {
     pub fn new(
         token_address: String,
         command_rx: mpsc::Receiver<PoolCommand>,
@@ -43,7 +43,7 @@ impl PoolActorV2 {
     }
 
     pub async fn run(mut self) {
-        tracing::info!("Starting PoolActorV2 for token {}", self.token_address);
+        tracing::info!("Starting PoolActor for token {}", self.token_address);
 
         let mut health_check_interval = tokio::time::interval(std::time::Duration::from_secs(30));
 
@@ -84,7 +84,7 @@ impl PoolActorV2 {
             }
         }
 
-        tracing::info!("PoolActorV2 for {} shutting down", self.token_address);
+        tracing::info!("PoolActor for {} shutting down", self.token_address);
     }
 
     async fn initialize_pool(&mut self) -> Result<(), AppError> {
@@ -237,15 +237,15 @@ impl PoolActorV2 {
     }
 }
 
-/// Factory for creating new V2 pool actors
-pub struct PoolFactoryV2 {
+/// Factory for creating new pool actors
+pub struct PoolFactory {
     subscription_manager: Arc<SubscriptionManager>,
     rpc_client: Arc<RpcClient>,
     redis_client: Arc<RedisPool>,
     event_tx: broadcast::Sender<PoolEvent>,
 }
 
-impl PoolFactoryV2 {
+impl PoolFactory {
     pub fn new(
         subscription_manager: Arc<SubscriptionManager>,
         rpc_client: Arc<RpcClient>,
@@ -269,7 +269,7 @@ impl PoolFactoryV2 {
     ) -> (mpsc::Sender<PoolCommand>, tokio::task::JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel(100);
 
-        let pool = PoolActorV2::new(
+        let pool = PoolActor::new(
             token_address,
             command_rx,
             self.event_tx.clone(),

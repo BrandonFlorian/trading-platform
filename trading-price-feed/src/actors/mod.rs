@@ -1,4 +1,4 @@
 // src/actors/mod.rs
-pub mod pool_v2;
+pub mod pool;
 
-pub use pool_v2::{PoolActorV2, PoolFactoryV2};
+pub use pool::{PoolActor, PoolFactory};

@@ -22,20 +22,38 @@ async fn main() -> Result<(), AppError> {
     // Load environment variables
     dotenv().ok();
 
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    // Initialize tracing with appropriate level for production
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .init();
 
-    // Get configuration from environment
+    // Get configuration from environment with validation
     let rpc_url = std::env::var("SOLANA_RPC_HTTP_URL")
-        .map_err(|_| AppError::InternalError("SOLANA_RPC_HTTP_URL not set".to_string()))?;
+        .map_err(|_| AppError::InternalError("SOLANA_RPC_HTTP_URL environment variable is required".to_string()))?;
+    
     let ws_url = std::env::var("SOLANA_RPC_WS_URL")
-        .map_err(|_| AppError::InternalError("SOLANA_RPC_WS_URL not set".to_string()))?;
+        .map_err(|_| AppError::InternalError("SOLANA_RPC_WS_URL environment variable is required".to_string()))?;
+    
     let redis_url = std::env::var("REDIS_URL")
-        .map_err(|_| AppError::InternalError("REDIS_URL not set".to_string()))?;
+        .map_err(|_| AppError::InternalError("REDIS_URL environment variable is required".to_string()))?;
+    
     let port = std::env::var("PRICE_FEED_PORT")
-        .map_err(|_| AppError::InternalError("PRICE_FEED_PORT not set".to_string()))?
+        .map_err(|_| AppError::InternalError("PRICE_FEED_PORT environment variable is required".to_string()))?
         .parse::<u16>()
-        .map_err(|_| AppError::InternalError("Invalid PRICE_FEED_PORT".to_string()))?;
+        .map_err(|e| AppError::InternalError(format!("Invalid PRICE_FEED_PORT (must be 1-65535): {}", e)))?;
+
+    // Validate URLs
+    if !rpc_url.starts_with("http://") && !rpc_url.starts_with("https://") {
+        return Err(AppError::InternalError("SOLANA_RPC_HTTP_URL must start with http:// or https://".to_string()));
+    }
+    
+    if !ws_url.starts_with("ws://") && !ws_url.starts_with("wss://") {
+        return Err(AppError::InternalError("SOLANA_RPC_WS_URL must start with ws:// or wss://".to_string()));
+    }
+    
+    if !redis_url.starts_with("redis://") && !redis_url.starts_with("rediss://") {
+        return Err(AppError::InternalError("REDIS_URL must start with redis:// or rediss://".to_string()));
+    }
 
     // Create clients
     let rpc_client = Arc::new(solana_client::rpc_client::RpcClient::new(rpc_url));
