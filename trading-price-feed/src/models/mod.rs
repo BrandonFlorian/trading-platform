@@ -52,30 +52,7 @@ pub enum ServerMessage {
     Pong { timestamp: i64 },
 }
 
-/// Commands sent to the Subscription Coordinator
-#[derive(Debug)]
-pub enum CoordinatorCommand {
-    /// Subscribe a client to a token
-    Subscribe {
-        client_id: String,
-        token_address: String,
-        response_tx: oneshot::Sender<Result<(), AppError>>,
-    },
-
-    /// Unsubscribe a client from a token
-    Unsubscribe {
-        client_id: String,
-        token_address: String,
-    },
-
-    /// Client has disconnected
-    ClientDisconnected { client_id: String },
-
-    /// Shutdown the coordinator
-    Shutdown {
-        response_tx: oneshot::Sender<Result<(), AppError>>,
-    },
-}
+// Removed CoordinatorCommand - no longer using old coordinator
 
 /// Commands sent to Pool Actors
 #[derive(Debug)]

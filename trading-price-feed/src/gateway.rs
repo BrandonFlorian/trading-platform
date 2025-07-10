@@ -1,110 +1,145 @@
-// src/gateway.rs
+// src/gateway.rs - Simplified gateway for new vault monitoring system
 
 use axum::{
-    extract::{Path, State, WebSocketUpgrade},
+    extract::{State, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
-    Router,
+    Router, Json,
 };
+use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 use trading_common::models::PriceUpdate;
-use uuid::Uuid;
-
-use crate::{actors::ClientActor, models::CoordinatorCommand};
 
 /// Application state
 pub struct AppState {
-    /// Sender for coordinator commands
-    coordinator_tx: mpsc::Sender<CoordinatorCommand>,
-
-    /// Sender for price updates
+    /// Sender for price updates (for compatibility)
     price_tx: broadcast::Sender<PriceUpdate>,
+    
+    /// Mock coordinator for compatibility (not used)
+    _coordinator_tx: mpsc::Sender<String>, // Placeholder
 }
 
 /// Create a new router
 pub fn create_router(
-    coordinator_tx: mpsc::Sender<CoordinatorCommand>,
+    coordinator_tx: mpsc::Sender<String>, // Simplified placeholder
     price_tx: broadcast::Sender<PriceUpdate>,
 ) -> Router {
     let app_state = Arc::new(AppState {
-        coordinator_tx,
         price_tx,
+        _coordinator_tx: coordinator_tx,
     });
 
     Router::new()
+        .route("/health", get(health_check))
+        .route("/status", get(status))
         .route("/ws", get(handle_ws_connection))
-        .route("/ws/token_address", get(handle_ws_connection))
         .with_state(app_state)
 }
 
-/// Handler for WebSocket connections
+/// Health check endpoint
+pub async fn health_check() -> impl IntoResponse {
+    Json(json!({
+        "status": "healthy",
+        "service": "trading-price-feed",
+        "version": "2.0.0-vault-monitoring"
+    }))
+}
+
+/// Status endpoint
+pub async fn status() -> impl IntoResponse {
+    Json(json!({
+        "status": "running",
+        "implementation": "vault-based-monitoring",
+        "features": [
+            "real-time-vault-subscriptions",
+            "zero-rpc-price-updates", 
+            "connection-pooling",
+            "auto-recovery"
+        ]
+    }))
+}
+
+/// Handler for WebSocket connections (simplified for new implementation)
 pub async fn handle_ws_connection(
     ws: WebSocketUpgrade,
-    token_address: Option<Path<String>>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    tracing::info!(
-        "WebSocket connection request with token_address: {:?}",
-        token_address
-    );
+    tracing::info!("WebSocket connection request received");
+    
     ws.on_upgrade(move |socket| async move {
-        // Generate a unique client ID
-        let client_id = Uuid::new_v4().to_string();
-        tracing::info!("Client ID: {}", client_id);
-        // Get price subscription
-        let price_rx = state.price_tx.subscribe();
-        tracing::info!("Price subscription: {:?}", price_rx);
-
-        // Create client actor
-        let client = ClientActor::new(
-            client_id.clone(),
-            socket,
-            state.coordinator_tx.clone(),
-            price_rx,
-        );
-
-        tracing::info!("Client actor created");
-
-        // If token_address was provided in the path, auto-subscribe
-        if let Some(Path(token)) = token_address {
-            if !token.is_empty() {
-                tracing::info!("Attempting auto-subscription to token: {}", token);
-                let (tx, rx) = oneshot::channel();
-                if let Err(e) = state
-                    .coordinator_tx
-                    .send(CoordinatorCommand::Subscribe {
-                        client_id: client_id.clone(),
-                        token_address: token.clone(),
-                        response_tx: tx,
-                    })
-                    .await
-                {
-                    tracing::error!("Failed to send auto-subscribe command: {}", e);
-                    return;
+        // For now, just provide a simple WebSocket that can receive price updates
+        let mut price_rx = state.price_tx.subscribe();
+        let (mut sender, mut receiver) = socket.split();
+        
+        use axum::extract::ws::Message;
+        use futures_util::{SinkExt, StreamExt};
+        
+        // Send welcome message
+        let welcome = json!({
+            "type": "welcome",
+            "message": "Connected to vault-based price feed",
+            "version": "2.0.0"
+        });
+        
+        if let Err(e) = sender.send(Message::Text(welcome.to_string().into())).await {
+            tracing::error!("Failed to send welcome message: {}", e);
+            return;
+        }
+        
+        loop {
+            tokio::select! {
+                // Handle incoming messages from client
+                msg = receiver.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            tracing::info!("Received: {}", text);
+                            // Echo for now
+                            let response = json!({
+                                "type": "echo",
+                                "data": text.to_string()
+                            });
+                            if let Err(e) = sender.send(Message::Text(response.to_string().into())).await {
+                                tracing::error!("Failed to send echo: {}", e);
+                                break;
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            tracing::info!("Client disconnected");
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            tracing::error!("WebSocket error: {}", e);
+                            break;
+                        }
+                        None => {
+                            tracing::info!("WebSocket stream ended");
+                            break;
+                        }
+                        _ => {}
+                    }
                 }
-
-                tracing::info!("Auto-subscribe command sent");
-
-                // Wait for response
-                match rx.await {
-                    Ok(Ok(_)) => {
-                        tracing::info!("Auto-subscribed client {} to token {}", client_id, token);
-                    }
-                    Ok(Err(e)) => {
-                        tracing::error!("Auto-subscribe failed: {}", e);
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to receive auto-subscribe response: {}", e);
-                        return;
+                // Handle price updates
+                price_update = price_rx.recv() => {
+                    match price_update {
+                        Ok(update) => {
+                            let message = json!({
+                                "type": "price_update",
+                                "data": update
+                            });
+                            if let Err(e) = sender.send(Message::Text(message.to_string().into())).await {
+                                tracing::error!("Failed to send price update: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Price receiver error: {}", e);
+                        }
                     }
                 }
             }
         }
-
-        // Run the client actor
-        client.run().await;
-        tracing::info!("Client actor run");
+        
+        tracing::info!("WebSocket connection closed");
     })
 }

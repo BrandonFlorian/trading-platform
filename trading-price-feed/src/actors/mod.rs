@@ -1,11 +1,4 @@
 // src/actors/mod.rs
-// pub mod client;
-// pub mod coordinator;
-pub mod client;
-pub mod coordinator;
-pub mod pool;
-// pub use client::ClientActor;
-// pub use coordinator::SubscriptionCoordinator;
-pub use client::ClientActor;
-pub use coordinator::SubscriptionCoordinator;
-pub use pool::{PoolActor, PoolFactory};
+pub mod pool_v2;
+
+pub use pool_v2::{PoolActorV2, PoolFactoryV2};

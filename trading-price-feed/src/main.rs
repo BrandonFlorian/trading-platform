@@ -1,22 +1,21 @@
-// src/main.rs
+// New main.rs using vault monitoring system
 mod actors;
 mod gateway;
 mod messages;
 mod models;
 mod raydium;
+mod vault_monitor;
 
-use actors::SubscriptionCoordinator;
+// use actors::SubscriptionCoordinator; // Removed old implementation
 use dotenv::dotenv;
-
-use models::CoordinatorCommand;
-use solana_client::rpc_client::RpcClient;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tokio::sync::oneshot;
+// use tokio::sync::oneshot; // Not used in new implementation
 use trading_common::error::AppError;
 use trading_common::redis::RedisPool;
+use vault_monitor::SubscriptionManager;
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
@@ -29,6 +28,8 @@ async fn main() -> Result<(), AppError> {
     // Get configuration from environment
     let rpc_url = std::env::var("SOLANA_RPC_HTTP_URL")
         .map_err(|_| AppError::InternalError("SOLANA_RPC_HTTP_URL not set".to_string()))?;
+    let ws_url = std::env::var("SOLANA_RPC_WS_URL")
+        .map_err(|_| AppError::InternalError("SOLANA_RPC_WS_URL not set".to_string()))?;
     let redis_url = std::env::var("REDIS_URL")
         .map_err(|_| AppError::InternalError("REDIS_URL not set".to_string()))?;
     let port = std::env::var("PRICE_FEED_PORT")
@@ -37,22 +38,37 @@ async fn main() -> Result<(), AppError> {
         .map_err(|_| AppError::InternalError("Invalid PRICE_FEED_PORT".to_string()))?;
 
     // Create clients
-    let rpc_client = Arc::new(RpcClient::new(rpc_url));
+    let rpc_client = Arc::new(solana_client::rpc_client::RpcClient::new(rpc_url));
     let connection_monitor = Arc::new(trading_common::ConnectionMonitor::new(Arc::new(
         trading_common::event_system::EventSystem::new(),
     )));
     let redis_client = Arc::new(RedisPool::new(&redis_url, connection_monitor).await?);
 
-    // Create subscription coordinator
-    let (coordinator, coordinator_tx, price_tx) =
-        SubscriptionCoordinator::new(rpc_client.clone(), redis_client.clone());
+    // Create the new vault-based subscription manager
+    let (subscription_manager, price_receiver) = SubscriptionManager::new(
+        ws_url,
+        Arc::clone(&redis_client),
+    );
+    let subscription_manager = Arc::new(subscription_manager);
 
-    // Start coordinator task
-    let coordinator_handle = tokio::spawn(async move {
-        coordinator.run().await;
+    // Create a broadcast channel for price updates to forward to clients
+    let (price_tx, _) = tokio::sync::broadcast::channel(1000);
+
+    // Start a task to forward price updates from subscription manager to the broadcast channel
+    let price_tx_clone = price_tx.clone();
+    let mut price_receiver = price_receiver;
+    tokio::spawn(async move {
+        while let Ok(price_update) = price_receiver.recv().await {
+            if let Err(e) = price_tx_clone.send(price_update) {
+                tracing::error!("Failed to broadcast price update: {}", e);
+            }
+        }
     });
 
-    // Create router
+    // Create placeholder coordinator channel (for gateway compatibility)
+    let (coordinator_tx, _) = tokio::sync::mpsc::channel::<String>(100);
+
+    // Create router with the existing gateway (we can update this later to use the new system directly)
     let app = gateway::create_router(coordinator_tx.clone(), price_tx.clone());
 
     // Create server address
@@ -63,7 +79,7 @@ async fn main() -> Result<(), AppError> {
         .await
         .map_err(|e| AppError::InternalError(format!("Failed to bind to address: {}", e)))?;
 
-    tracing::info!("Starting server on {}", addr);
+    tracing::info!("Starting vault-based price feed server on {}", addr);
 
     // Create a shutdown channel
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -78,6 +94,101 @@ async fn main() -> Result<(), AppError> {
             .map_err(|e| AppError::InternalError(format!("Server error: {}", e)))
     });
 
+    // Example: Subscribe to a token for testing
+    // You can remove this or make it configurable
+    if let Ok(test_token) = std::env::var("TEST_TOKEN_ADDRESS") {
+        tracing::info!("Test mode: subscribing to token {}", test_token);
+        
+        // Find the pool first
+        let pool_finder = raydium::RaydiumPoolFinder::new(
+            Arc::clone(&rpc_client),
+            Arc::clone(&redis_client),
+        );
+        
+        match pool_finder.find_pool(&test_token).await {
+            Ok(mut pool) => {
+                pool.load_metadata(&rpc_client, &redis_client).await?;
+                
+                tracing::info!("Found pool for {}:", test_token);
+                tracing::info!("  Pool address: {}", pool.address);
+                tracing::info!("  Base vault: {}", pool.base_vault);
+                tracing::info!("  Quote vault: {}", pool.quote_vault);
+                tracing::info!("  Base decimals: {}", pool.base_decimals);
+                tracing::info!("  Quote decimals: {}", pool.quote_decimals);
+                
+                // Check vault balances immediately
+                match rpc_client.get_token_account_balance(&pool.base_vault) {
+                    Ok(base_balance) => {
+                        tracing::info!("  Base vault balance: {}", base_balance.amount);
+                    }
+                    Err(e) => {
+                        tracing::error!("  Failed to get base vault balance: {}", e);
+                    }
+                }
+                
+                match rpc_client.get_token_account_balance(&pool.quote_vault) {
+                    Ok(quote_balance) => {
+                        tracing::info!("  Quote vault balance: {}", quote_balance.amount);
+                    }
+                    Err(e) => {
+                        tracing::error!("  Failed to get quote vault balance: {}", e);
+                    }
+                }
+                
+                let pool_state = vault_monitor::PoolMonitorState {
+                    token_address: test_token.clone(),
+                    pool_address: pool.address,
+                    base_vault: pool.base_vault,
+                    quote_vault: pool.quote_vault,
+                    base_decimals: pool.base_decimals,
+                    quote_decimals: pool.quote_decimals,
+                    base_balance: None,
+                    quote_balance: None,
+                    last_price_update: None,
+                };
+                
+                if let Err(e) = subscription_manager.subscribe_to_token(test_token.clone(), pool_state).await {
+                    tracing::error!("Failed to subscribe to test token {}: {}", test_token, e);
+                } else {
+                    tracing::info!("Successfully subscribed to test token: {}", test_token);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to find pool for test token {}: {}", test_token, e);
+            }
+        }
+    }
+
+    // Start health monitoring task
+    let subscription_manager_clone = Arc::clone(&subscription_manager);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        
+        loop {
+            interval.tick().await;
+            
+            let health = subscription_manager_clone.get_health_status().await;
+            let metrics = subscription_manager_clone.get_metrics().await;
+            
+            tracing::info!(
+                "Subscription Health: {}/{} connections healthy, {}/{} subscriptions healthy, {:.1}% uptime",
+                health.healthy_connections,
+                health.total_connections,
+                health.healthy_subscriptions,
+                health.total_subscriptions,
+                metrics.uptime_percentage
+            );
+            
+            // Auto-recovery for unhealthy subscriptions
+            if metrics.uptime_percentage < 80.0 {
+                tracing::warn!("Low subscription health, attempting recovery...");
+                if let Err(e) = subscription_manager_clone.refresh_all_subscriptions().await {
+                    tracing::error!("Failed to refresh subscriptions: {}", e);
+                }
+            }
+        }
+    });
+
     // Wait for shutdown signal
     shutdown_signal().await;
 
@@ -89,27 +200,7 @@ async fn main() -> Result<(), AppError> {
         tracing::error!("Error waiting for server task: {}", e);
     }
 
-    // Shutdown coordinator
-    tracing::info!("Shutting down coordinator");
-    let (tx, rx) = oneshot::channel();
-    if let Err(e) = coordinator_tx
-        .send(CoordinatorCommand::Shutdown { response_tx: tx })
-        .await
-    {
-        tracing::error!("Failed to send shutdown command: {}", e);
-    }
-
-    // Wait for coordinator to shut down
-    if let Err(e) = rx.await {
-        tracing::error!("Failed to receive shutdown response: {}", e);
-    }
-
-    // Wait for coordinator task to finish
-    if let Err(e) = coordinator_handle.await {
-        tracing::error!("Error waiting for coordinator task: {}", e);
-    }
-
-    tracing::info!("Server shut down gracefully");
+    tracing::info!("Vault-based price feed server shut down gracefully");
     Ok(())
 }
 

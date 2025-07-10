@@ -135,6 +135,9 @@ pub enum AppError {
     #[error("Price not available: {0}")]
     PriceNotAvailable(String),
 
+    #[error("Invalid price: {0}")]
+    InvalidPrice(String),
+
     #[error("Internal error: {0}")]
     InternalError(String),
 
@@ -226,6 +229,7 @@ impl IntoResponse for AppError {
             AppError::SerializationError(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::PoolNotFound(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::PriceNotAvailable(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+            AppError::InvalidPrice(err) => (StatusCode::BAD_REQUEST, err.to_string()),
             AppError::InternalError(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             AppError::TimeoutError(err) => (StatusCode::GATEWAY_TIMEOUT, err.to_string()),
             AppError::ChannelSendError(err) => (StatusCode::BAD_REQUEST, err.to_string()),

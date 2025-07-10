@@ -1,4 +1,4 @@
-use crate::raydium::RaydiumPool;
+use crate::raydium::SimpleRaydiumPool;
 use serde::{Deserialize, Serialize};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::rpc_client::RpcClient;
@@ -22,7 +22,7 @@ pub struct RaydiumPoolFinder {
 }
 
 struct CachedPool {
-    pool: RaydiumPool,
+    pool: SimpleRaydiumPool,
     last_updated: Instant,
 }
 
@@ -37,8 +37,8 @@ struct CachedPoolData {
     quote_decimals: u8,
 }
 
-impl From<&RaydiumPool> for CachedPoolData {
-    fn from(pool: &RaydiumPool) -> Self {
+impl From<&SimpleRaydiumPool> for CachedPoolData {
+    fn from(pool: &SimpleRaydiumPool) -> Self {
         Self {
             address: pool.address.to_string(),
             base_mint: pool.base_mint.to_string(),
@@ -52,8 +52,8 @@ impl From<&RaydiumPool> for CachedPoolData {
 }
 
 impl CachedPoolData {
-    fn to_pool(&self) -> Result<RaydiumPool, AppError> {
-        Ok(RaydiumPool {
+    fn to_pool(&self) -> Result<SimpleRaydiumPool, AppError> {
+        Ok(SimpleRaydiumPool {
             address: Pubkey::from_str(&self.address)?,
             base_mint: Pubkey::from_str(&self.base_mint)?,
             quote_mint: Pubkey::from_str(&self.quote_mint)?,
@@ -61,7 +61,6 @@ impl CachedPoolData {
             quote_vault: Pubkey::from_str(&self.quote_vault)?,
             base_decimals: self.base_decimals,
             quote_decimals: self.quote_decimals,
-            account_data: Arc::new(RwLock::new(None)),
         })
     }
 }
@@ -87,7 +86,7 @@ impl RaydiumPoolFinder {
         }
     }
 
-    pub async fn find_pool(&self, token_address: &str) -> Result<RaydiumPool, AppError> {
+    pub async fn find_pool(&self, token_address: &str) -> Result<SimpleRaydiumPool, AppError> {
         // Try cache first
         if let Some(pool) = self.get_from_cache(token_address).await? {
             return Ok(pool);
@@ -102,7 +101,10 @@ impl RaydiumPoolFinder {
         Ok(pool)
     }
 
-    pub async fn find_pool_from_rpc(&self, token_address: &str) -> Result<RaydiumPool, AppError> {
+    pub async fn find_pool_from_rpc(
+        &self,
+        token_address: &str,
+    ) -> Result<SimpleRaydiumPool, AppError> {
         tracing::info!("Finding pool for token {}", token_address);
         let token_pubkey = Pubkey::from_str(token_address)
             .map_err(|_| AppError::InvalidPoolAddress(token_address.to_string()))?;
@@ -133,11 +135,11 @@ impl RaydiumPoolFinder {
             .map_err(|e| AppError::SolanaRpcError { source: e })?;
 
         // Track the best pool based on liquidity
-        let mut best_pool: Option<(RaydiumPool, u64)> = None;
+        let mut best_pool: Option<(SimpleRaydiumPool, u64)> = None;
 
         // Find pool with highest liquidity
         for (pubkey, account) in accounts {
-            if let Ok(mut pool) = RaydiumPool::from_account_data(&pubkey, &account.data) {
+            if let Ok(mut pool) = SimpleRaydiumPool::from_account_data(&pubkey, &account.data) {
                 // Verify this is a SOL pool
                 if pool.quote_mint != sol_pubkey {
                     continue;
@@ -175,7 +177,10 @@ impl RaydiumPoolFinder {
         }
     }
 
-    async fn get_from_cache(&self, token_address: &str) -> Result<Option<RaydiumPool>, AppError> {
+    async fn get_from_cache(
+        &self,
+        token_address: &str,
+    ) -> Result<Option<SimpleRaydiumPool>, AppError> {
         // Check in-memory cache first
         let active_pools = self.active_pools.read().await;
         if let Some(cached) = active_pools.get(token_address) {
@@ -201,7 +206,11 @@ impl RaydiumPoolFinder {
         Ok(None)
     }
 
-    async fn cache_pool(&self, token_address: &str, pool: &RaydiumPool) -> Result<(), AppError> {
+    async fn cache_pool(
+        &self,
+        token_address: &str,
+        pool: &SimpleRaydiumPool,
+    ) -> Result<(), AppError> {
         // Create serializable version for Redis
         let cached_data = CachedPoolData::from(pool);
 
