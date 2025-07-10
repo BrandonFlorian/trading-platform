@@ -231,7 +231,7 @@ impl WebSocketManager {
     ) -> Result<(), AppError> {
         match message {
             Message::Text(text) => {
-                tracing::debug!("Received WebSocket message: {}", text);
+                tracing::info!("📨 RAW WebSocket message: {}", text.chars().take(200).collect::<String>());
                 let json: Value = serde_json::from_str(&text).map_err(|e| {
                     AppError::JsonParseError(format!("Failed to parse WebSocket message: {}", e))
                 })?;
@@ -262,11 +262,13 @@ impl WebSocketManager {
                 }
                 // Handle subscription notifications
                 else if let Some(params) = json.get("params") {
-                    if let Some(subscription) = params.get("subscription").and_then(|s| s.as_str())
-                    {
-                        tracing::debug!(
-                            "Received subscription notification: subscription_id={}",
-                            subscription
+                    // Handle different types of subscription notifications
+                    if let Some(subscription) = params.get("subscription").and_then(|s| s.as_str()) {
+                        // Standard subscription notification format
+                        tracing::info!(
+                            "🔔 SUBSCRIPTION NOTIFICATION: subscription_id={}, params: {:?}",
+                            subscription,
+                            params
                         );
                         let routes = subscription_routes.read().await;
                         if routes.contains_key(subscription) {
@@ -285,6 +287,30 @@ impl WebSocketManager {
                                 subscription
                             );
                         }
+                    } else if json.get("method").and_then(|m| m.as_str()) == Some("accountNotification") {
+                        // Handle accountNotification messages - these don't have subscription field
+                        // We need to identify which subscription this belongs to based on the connection
+                        tracing::info!(
+                            "🔔 ACCOUNT NOTIFICATION: method=accountNotification, params: {:?}",
+                            params.to_string().chars().take(100).collect::<String>()
+                        );
+                        
+                        // For account notifications, we need to forward to ALL subscriptions for this connection
+                        // since we can't easily determine which specific vault account this is for
+                        let routes = subscription_routes.read().await;
+                        
+                        // Forward to all subscription routes for this connection
+                        for (subscription_id, _route) in routes.iter() {
+                            tracing::info!(
+                                "Forwarding account notification for subscription: {}",
+                                subscription_id
+                            );
+                            if let Err(e) =
+                                message_sender.send((subscription_id.to_string(), json.clone())).await
+                            {
+                                tracing::error!("Failed to forward account notification: {}", e);
+                            }
+                        }
                     }
                 }
                 // Handle error messages
@@ -302,7 +328,7 @@ impl WebSocketManager {
                 }
                 // Handle any other message types
                 else {
-                    tracing::debug!("Received unknown message type: {}", json);
+                    tracing::info!("❓ UNKNOWN message type: {}", json);
                 }
             }
             Message::Ping(data) => {

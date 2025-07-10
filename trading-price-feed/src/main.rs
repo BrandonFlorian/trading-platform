@@ -48,6 +48,7 @@ async fn main() -> Result<(), AppError> {
     let (subscription_manager, price_receiver) = SubscriptionManager::new(
         ws_url,
         Arc::clone(&redis_client),
+        Arc::clone(&rpc_client),
     );
     let subscription_manager = Arc::new(subscription_manager);
 

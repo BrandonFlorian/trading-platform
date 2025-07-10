@@ -1,6 +1,7 @@
 use trading_common::dex::DexType;
 use trading_common::error::AppError;
 use trading_common::models::PriceUpdate;
+use solana_sdk::program_pack::Pack;
 
 use super::{PoolMonitorState, VaultPriceUpdate};
 
@@ -9,25 +10,34 @@ pub struct PriceCalculator;
 
 impl PriceCalculator {
     /// Convert vault price update to standard price update format
-    pub fn convert_to_price_update(
+    pub async fn convert_to_price_update(
         vault_update: VaultPriceUpdate,
         pool_state: &PoolMonitorState,
         sol_price_usd: f64,
+        rpc_client: &solana_client::rpc_client::RpcClient,
     ) -> Result<PriceUpdate, AppError> {
-        // Calculate market cap if we have token supply data
-        let market_cap = 0.0; // Placeholder - would need to implement token supply fetching
+        // Calculate USD price
+        let price_usd = vault_update.price_sol * sol_price_usd;
+
+        // Calculate market cap using token supply
+        let market_cap = Self::calculate_market_cap(
+            vault_update.price_sol,
+            sol_price_usd,
+            &vault_update.token_address,
+            rpc_client,
+        ).await?;
 
         let price_update = PriceUpdate {
             token_address: vault_update.token_address,
             price_sol: vault_update.price_sol,
-            price_usd: vault_update.price_usd,
+            price_usd: Some(price_usd),
             market_cap,
             timestamp: vault_update.timestamp,
             dex_type: DexType::Raydium,
             liquidity: Some(vault_update.liquidity_sol),
             liquidity_usd: Some(vault_update.liquidity_sol * sol_price_usd),
             pool_address: Some(pool_state.pool_address.to_string()),
-            volume_24h: None, // Would need historical data
+            volume_24h: None, // Would need historical data tracking
             volume_6h: None,
             volume_1h: None,
             volume_5m: None,
@@ -96,20 +106,51 @@ impl PriceCalculator {
         Ok(price_impact)
     }
 
-    /// Calculate market cap (requires token supply data)
+    /// Calculate market cap using token supply from mint account
     async fn calculate_market_cap(
-        _price_sol: f64,
-        _sol_price_usd: f64,
-        _token_address: &str,
+        price_sol: f64,
+        sol_price_usd: f64,
+        token_address: &str,
+        rpc_client: &solana_client::rpc_client::RpcClient,
     ) -> Result<f64, AppError> {
-        // This would require fetching token supply from the mint account
-        // For now, returning 0.0 as placeholder
-        // In production, you'd:
-        // 1. Cache token supply data
-        // 2. Fetch from mint account if not cached
-        // 3. Calculate: supply * price_sol * sol_price_usd
+        // Parse token address
+        let token_pubkey = token_address.parse::<solana_sdk::pubkey::Pubkey>()
+            .map_err(|e| AppError::InternalError(format!("Invalid token address: {}", e)))?;
 
-        Ok(0.0)
+        // Fetch mint account to get supply information
+        match rpc_client.get_account(&token_pubkey) {
+            Ok(account) => {
+                // Parse the mint account data
+                match spl_token::state::Mint::unpack(&account.data) {
+                    Ok(mint) => {
+                        // Convert supply to human-readable format
+                        let total_supply = mint.supply as f64 / 10f64.powi(mint.decimals as i32);
+                        
+                        // Calculate market cap: supply * price_sol * sol_price_usd
+                        let market_cap = total_supply * price_sol * sol_price_usd;
+                        
+                        tracing::debug!(
+                            "Market cap calculation for {}: supply={}, price_sol={}, sol_price_usd={}, market_cap={}",
+                            token_address,
+                            total_supply,
+                            price_sol,
+                            sol_price_usd,
+                            market_cap
+                        );
+                        
+                        Ok(market_cap)
+                    },
+                    Err(e) => {
+                        tracing::warn!("Failed to parse mint account for {}: {}", token_address, e);
+                        Ok(0.0) // Return 0 if we can't parse the mint
+                    }
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to fetch mint account for {}: {}", token_address, e);
+                Ok(0.0) // Return 0 if we can't fetch the account
+            }
+        }
     }
 
     /// Validate price data for sanity checks

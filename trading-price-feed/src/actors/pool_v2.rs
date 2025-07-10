@@ -130,6 +130,7 @@ impl PoolActorV2 {
         let (_, price_receiver) = SubscriptionManager::new(
             std::env::var("SOLANA_RPC_WS_URL").unwrap_or_default(),
             Arc::clone(&self.redis_client),
+            Arc::clone(&self.rpc_client),
         );
         self.price_receiver = Some(price_receiver);
 

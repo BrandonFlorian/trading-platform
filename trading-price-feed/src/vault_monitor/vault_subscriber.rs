@@ -126,11 +126,12 @@ impl VaultSubscriber {
         // Find which token this vault belongs to
         let token_address = self.find_token_for_vault(&vault_balance.vault_address).await?;
         
-        tracing::debug!(
-            "Received vault update for token {}: vault {} balance {}",
+        tracing::info!(
+            "📊 Vault update for {}: {} balance = {} (owner: {})",
             token_address,
             vault_address,
-            token_account.amount
+            token_account.amount,
+            token_account.owner
         );
         
         // Update cached balance
@@ -272,11 +273,13 @@ impl VaultSubscriber {
         };
 
         tracing::info!(
-            "Price update for {}: ${:.6} SOL (${:.4} USD), Liquidity: {:.2} SOL",
+            "💰 Calculated price for {}: ${:.6} SOL (${:.4} USD), Liquidity: {:.2} SOL | Base: {} | Quote: {}",
             token_address,
             price_sol,
             price_usd,
-            liquidity_sol
+            liquidity_sol,
+            base_balance,
+            quote_balance
         );
 
         Ok(price_update)

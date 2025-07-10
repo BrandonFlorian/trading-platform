@@ -15,12 +15,14 @@ pub struct SubscriptionManager {
     active_subscriptions: Arc<RwLock<HashMap<String, PoolMonitorState>>>,
     price_sender: tokio::sync::broadcast::Sender<PriceUpdate>,
     redis_client: Arc<trading_common::redis::RedisPool>,
+    rpc_client: Arc<solana_client::rpc_client::RpcClient>,
 }
 
 impl SubscriptionManager {
     pub fn new(
         ws_url: String,
         redis_client: Arc<trading_common::redis::RedisPool>,
+        rpc_client: Arc<solana_client::rpc_client::RpcClient>,
     ) -> (Self, tokio::sync::broadcast::Receiver<PriceUpdate>) {
         // Create WebSocket manager
         let (ws_manager, mut ws_message_receiver) = WebSocketManager::new(ws_url);
@@ -45,6 +47,7 @@ impl SubscriptionManager {
             active_subscriptions: Arc::new(RwLock::new(HashMap::new())),
             price_sender: price_sender.clone(),
             redis_client: Arc::clone(&redis_client),
+            rpc_client: Arc::clone(&rpc_client),
         };
 
         // Start WebSocket message processing task
@@ -63,6 +66,7 @@ impl SubscriptionManager {
         // Start vault price update processing task
         let active_subscriptions = Arc::clone(&manager.active_subscriptions);
         let redis_client_clone = Arc::clone(&redis_client);
+        let rpc_client_clone = Arc::clone(&rpc_client);
         let price_sender_clone = price_sender.clone();
         
         tokio::spawn(async move {
@@ -71,6 +75,7 @@ impl SubscriptionManager {
                     vault_update,
                     &active_subscriptions,
                     &redis_client_clone,
+                    &rpc_client_clone,
                     &price_sender_clone,
                 ).await {
                     tracing::error!("Failed to process vault price update: {}", e);
@@ -128,6 +133,7 @@ impl SubscriptionManager {
         vault_update: VaultPriceUpdate,
         active_subscriptions: &Arc<RwLock<HashMap<String, PoolMonitorState>>>,
         redis_client: &Arc<trading_common::redis::RedisPool>,
+        rpc_client: &Arc<solana_client::rpc_client::RpcClient>,
         price_sender: &tokio::sync::broadcast::Sender<PriceUpdate>,
     ) -> Result<(), AppError> {
         let pool_state = {
@@ -151,21 +157,35 @@ impl SubscriptionManager {
 
         // Convert to standard price update format
         let price_update = PriceCalculator::convert_to_price_update(
-            vault_update,
+            vault_update.clone(),
             &pool_state,
             sol_price_usd,
-        )?;
+            rpc_client,
+        ).await?;
 
-        // Validate price data
+        // Validate price data using the actual balances from the vault update
         PriceCalculator::validate_price_data(
             price_update.price_sol,
-            pool_state.base_balance.unwrap_or(0),
-            pool_state.quote_balance.unwrap_or(0),
+            vault_update.base_balance,
+            vault_update.quote_balance,
         )?;
+
+        // Log the price update before broadcasting
+        tracing::info!(
+            "🎯 PRICE UPDATE: {} = ${:.6} SOL (${:.4} USD) | Market Cap: ${:.0} | Liquidity: {:.2} SOL (${:.0} USD)",
+            price_update.token_address,
+            price_update.price_sol,
+            price_update.price_usd.unwrap_or(0.0),
+            price_update.market_cap,
+            price_update.liquidity.unwrap_or(0.0),
+            price_update.liquidity_usd.unwrap_or(0.0)
+        );
 
         // Broadcast the price update
         if let Err(e) = price_sender.send(price_update) {
             tracing::error!("Failed to broadcast price update: {}", e);
+        } else {
+            tracing::debug!("Successfully broadcasted price update to {} subscribers", price_sender.receiver_count());
         }
 
         Ok(())
