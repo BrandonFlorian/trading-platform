@@ -4,6 +4,9 @@ use trading_common::{error::AppError, redis::RedisPool};
 use solana_client::rpc_client::RpcClient;
 use std::sync::Arc;
 use std::time::Duration;
+use borsh::BorshDeserialize;
+
+use super::types::PoolState;
 
 /// Simplified Raydium pool structure for vault monitoring
 #[derive(Debug, Clone)]
@@ -39,18 +42,26 @@ impl SimpleRaydiumPool {
         // SOL token at offset 400
         let quote_mint = Pubkey::from_str("So11111111111111111111111111111111111111112")?;
 
-        // Base and quote vaults
-        let base_vault = {
+        // Base and quote vaults - NOTE: Swapped based on actual vault contents
+        let quote_vault = {
             let mut bytes = [0u8; 32];
-            bytes.copy_from_slice(&data[336 - 8..368 - 8]); // Adjust for discriminator
+            bytes.copy_from_slice(&data[336 - 8..368 - 8]); // Adjust for discriminator - this actually contains SOL
             Pubkey::new_from_array(bytes)
         };
 
-        let quote_vault = {
+        let base_vault = {
             let mut bytes = [0u8; 32];
-            bytes.copy_from_slice(&data[368 - 8..400 - 8]); // Adjust for discriminator
+            bytes.copy_from_slice(&data[368 - 8..400 - 8]); // Adjust for discriminator - this actually contains the token
             Pubkey::new_from_array(bytes)
         };
+
+        tracing::info!(
+            "🏊 Parsed Raydium pool: base_mint={}, quote_mint={}, base_vault={}, quote_vault={}",
+            base_mint,
+            quote_mint,
+            base_vault,
+            quote_vault
+        );
 
         Ok(Self {
             address: *address,

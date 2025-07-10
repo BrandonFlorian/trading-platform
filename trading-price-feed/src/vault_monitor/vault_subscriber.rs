@@ -112,7 +112,18 @@ impl VaultSubscriber {
         })?;
 
         // Get vault address from subscription routes
-        let vault_address = self.get_vault_address_from_subscription(&subscription_id).await?;
+        // Note: This may fail if messages are being forwarded to wrong subscriptions
+        let vault_address_result = self.get_vault_address_from_subscription(&subscription_id).await;
+        
+        if let Err(e) = &vault_address_result {
+            tracing::warn!(
+                "Failed to get vault address for subscription {}: {}. This may be due to message forwarding to wrong subscription.",
+                subscription_id, e
+            );
+            return Ok(()); // Silently ignore - likely forwarded to wrong subscription
+        }
+        
+        let vault_address = vault_address_result.unwrap();
 
         // Create vault balance update
         let vault_balance = VaultBalance {
@@ -124,15 +135,50 @@ impl VaultSubscriber {
         };
 
         // Find which token this vault belongs to
-        let token_address = self.find_token_for_vault(&vault_balance.vault_address).await?;
+        let token_address_result = self.find_token_for_vault(&vault_balance.vault_address).await;
+        
+        if let Err(e) = &token_address_result {
+            tracing::warn!(
+                "Failed to find token for vault {}: {}. This may be due to message forwarding to wrong subscription.",
+                vault_address, e
+            );
+            return Ok(()); // Silently ignore - likely forwarded to wrong subscription
+        }
+        
+        let token_address = token_address_result.unwrap();
         
         tracing::info!(
-            "📊 Vault update for {}: {} balance = {} (owner: {})",
+            "📊 Vault update for {}: {} balance = {} (mint: {}, owner: {})",
             token_address,
             vault_address,
             token_account.amount,
+            token_account.mint,
             token_account.owner
         );
+
+        // Debug: Compare with expected vault addresses and mints
+        let pool_state = {
+            let pool_states = self.pool_states.read().await;
+            pool_states.get(&token_address).cloned()
+        };
+        
+        if let Some(pool_state) = pool_state {
+            let expected_mint = if vault_address == pool_state.base_vault {
+                pool_state.token_address.clone()
+            } else if vault_address == pool_state.quote_vault {
+                "So11111111111111111111111111111111111111112".to_string()
+            } else {
+                "Unknown".to_string()
+            };
+            
+            tracing::info!(
+                "🔍 Vault debug - Address: {}, Expected mint: {}, Actual mint: {}, Match: {}",
+                vault_address,
+                expected_mint,
+                token_account.mint,
+                expected_mint == token_account.mint.to_string()
+            );
+        }
         
         // Update cached balance
         {
@@ -175,6 +221,7 @@ impl VaultSubscriber {
             .copied()
             .ok_or_else(|| AppError::InternalError(format!("No vault found for subscription: {}", subscription_id)))
     }
+
 
     /// Find which token address corresponds to a vault address
     async fn find_token_for_vault(&self, vault_address: &Pubkey) -> Result<String, AppError> {

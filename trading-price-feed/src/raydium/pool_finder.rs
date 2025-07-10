@@ -116,6 +116,11 @@ impl RaydiumPoolFinder {
         let memcmp = Memcmp::new(432, MemcmpEncodedBytes::Base58(token_pubkey.to_string()));
         let filters = vec![RpcFilterType::DataSize(752), RpcFilterType::Memcmp(memcmp)];
 
+        tracing::info!(
+            "🔍 RPC Query: Looking for pools with data_size=752, memcmp at offset 432 for token {}",
+            token_pubkey
+        );
+
         let config = RpcProgramAccountsConfig {
             filters: Some(filters),
             account_config: RpcAccountInfoConfig {
@@ -134,14 +139,38 @@ impl RaydiumPoolFinder {
             .get_program_accounts_with_config(&raydium_program, config)
             .map_err(|e| AppError::SolanaRpcError { source: e })?;
 
+        tracing::info!(
+            "🔍 RPC Response: Found {} accounts matching the filter",
+            accounts.len()
+        );
+
         // Track the best pool based on liquidity
         let mut best_pool: Option<(SimpleRaydiumPool, u64)> = None;
 
         // Find pool with highest liquidity
         for (pubkey, account) in accounts {
+            tracing::info!(
+                "🔍 Processing account: {}, data_length: {}",
+                pubkey,
+                account.data.len()
+            );
+            
             if let Ok(mut pool) = SimpleRaydiumPool::from_account_data(&pubkey, &account.data) {
+                tracing::info!(
+                    "✅ Successfully parsed pool: {}, base_mint: {}, quote_mint: {}",
+                    pubkey,
+                    pool.base_mint,
+                    pool.quote_mint
+                );
+                
                 // Verify this is a SOL pool
                 if pool.quote_mint != sol_pubkey {
+                    tracing::info!(
+                        "❌ Skipping pool {} - quote_mint {} is not SOL ({})",
+                        pubkey,
+                        pool.quote_mint,
+                        sol_pubkey
+                    );
                     continue;
                 }
 
@@ -156,15 +185,45 @@ impl RaydiumPoolFinder {
                     .map_err(|e| AppError::SolanaRpcError { source: e })?;
 
                 let liquidity = quote_balance.amount.parse::<u64>().unwrap_or(0);
+                
+                tracing::info!(
+                    "💰 Pool {} liquidity: {} SOL (raw: {})",
+                    pubkey,
+                    liquidity as f64 / 1_000_000_000.0,
+                    liquidity
+                );
 
                 // Update best pool if this has higher liquidity
                 match &best_pool {
-                    None => best_pool = Some((pool, liquidity)),
-                    Some((_, current_liquidity)) if liquidity > *current_liquidity => {
+                    None => {
+                        tracing::info!("🏆 Setting as best pool (first found): {}", pubkey);
                         best_pool = Some((pool, liquidity));
                     }
-                    _ => {}
+                    Some((current_pool, current_liquidity)) if liquidity > *current_liquidity => {
+                        tracing::info!(
+                            "🏆 New best pool: {} (liquidity: {}) replacing {} (liquidity: {})",
+                            pubkey,
+                            liquidity,
+                            current_pool.address,
+                            current_liquidity
+                        );
+                        best_pool = Some((pool, liquidity));
+                    }
+                    _ => {
+                        tracing::info!(
+                            "📊 Pool {} has lower liquidity: {} (current best: {})",
+                            pubkey,
+                            liquidity,
+                            best_pool.as_ref().unwrap().1
+                        );
+                    }
                 }
+            } else {
+                tracing::warn!(
+                    "❌ Failed to parse pool data for account: {} (data_length: {})",
+                    pubkey,
+                    account.data.len()
+                );
             }
         }
 

@@ -288,27 +288,57 @@ impl WebSocketManager {
                             );
                         }
                     } else if json.get("method").and_then(|m| m.as_str()) == Some("accountNotification") {
-                        // Handle accountNotification messages - these don't have subscription field
-                        // We need to identify which subscription this belongs to based on the connection
+                        // Handle accountNotification messages
+                        // According to Solana docs, these should have a subscription field in params
                         tracing::info!(
-                            "🔔 ACCOUNT NOTIFICATION: method=accountNotification, params: {:?}",
-                            params.to_string().chars().take(100).collect::<String>()
+                            "🔔 ACCOUNT NOTIFICATION: method=accountNotification, full message: {}",
+                            json.to_string().chars().take(300).collect::<String>()
                         );
                         
-                        // For account notifications, we need to forward to ALL subscriptions for this connection
-                        // since we can't easily determine which specific vault account this is for
-                        let routes = subscription_routes.read().await;
+                        // Let's check if there's a subscription field - could be string or number
+                        let subscription_id = params.get("subscription")
+                            .and_then(|s| s.as_str().map(|s| s.to_string()))
+                            .or_else(|| params.get("subscription").and_then(|s| s.as_u64().map(|n| n.to_string())));
                         
-                        // Forward to all subscription routes for this connection
-                        for (subscription_id, _route) in routes.iter() {
+                        if let Some(subscription) = subscription_id {
                             tracing::info!(
-                                "Forwarding account notification for subscription: {}",
-                                subscription_id
+                                "Found subscription ID in accountNotification: {}",
+                                subscription
                             );
-                            if let Err(e) =
-                                message_sender.send((subscription_id.to_string(), json.clone())).await
-                            {
-                                tracing::error!("Failed to forward account notification: {}", e);
+                            let routes = subscription_routes.read().await;
+                            if routes.contains_key(&subscription) {
+                                tracing::info!(
+                                    "Forwarding account notification for subscription: {}",
+                                    subscription
+                                );
+                                if let Err(e) =
+                                    message_sender.send((subscription.to_string(), json)).await
+                                {
+                                    tracing::error!("Failed to forward account notification: {}", e);
+                                }
+                            } else {
+                                tracing::warn!(
+                                    "Received account notification for unknown subscription: {}",
+                                    subscription
+                                );
+                            }
+                        } else {
+                            // If no subscription field, log the full message to understand the format
+                            tracing::warn!(
+                                "No subscription field in accountNotification. Full params: {}",
+                                params.to_string()
+                            );
+                            
+                            // For now, forward to all subscriptions as fallback
+                            let routes = subscription_routes.read().await;
+                            for (subscription_id, _route) in routes.iter() {
+                                tracing::info!(
+                                    "Fallback: Forwarding account notification to subscription: {}",
+                                    subscription_id
+                                );
+                                if let Err(e) = message_sender.send((subscription_id.to_string(), json.clone())).await {
+                                    tracing::error!("Failed to forward account notification: {}", e);
+                                }
                             }
                         }
                     }
