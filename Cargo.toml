@@ -6,6 +6,7 @@ members = [
     "trading-wallet",
     "trading-price-feed",
     "trading-sol-price-feed",
+    "test_pattern_discovery",
 ]
 resolver = "2"
 [workspace.dependencies]
@@ -57,3 +58,5 @@ tower-http = { version = "0.6.6", features = ["cors"] }
 bincode = "2.0.1"
 rust_decimal = "1.37.2"
 hex = "0.4.3"
+validator = { version = "0.20.0", features = ["derive"] }
+tower = "0.5.2"

@@ -2,11 +2,13 @@ pub mod constants;
 pub mod database;
 pub mod error;
 pub mod jupiter;
+pub mod middleware;
 pub mod models;
 pub mod pumpdotfun;
 pub mod raydium;
 pub mod redis;
 pub mod serde_helpers;
+pub mod validation;
 pub mod websocket;
 pub mod utils {
     pub mod copy_trade;
@@ -38,10 +40,12 @@ pub use proto::*;
 
 pub use connection_monitor::*;
 pub use jupiter::*;
+pub use middleware::*;
 pub use pumpdotfun::{buy, process_buy_request, process_sell_request, sell, types};
 pub use raydium::*;
 
 pub use serde_helpers::*;
 pub use utils::*;
+pub use validation::*;
 pub use wallet::*;
 pub use websocket::*;

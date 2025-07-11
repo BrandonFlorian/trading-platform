@@ -41,17 +41,12 @@ pub async fn sell(
 ) -> Result<SellResult, AppError> {
     let user_address = secret_keypair.pubkey();
 
-    println!(
-        "Selling token with Pump.fun DEX with keypair: {}",
-        secret_keypair.pubkey()
-    );
 
     // Get token holdings and decimals once
     let token_holdings = rpc_client
         .get_token_account_balance(&token_account_container.token_account_address.unwrap())?;
 
     let token_decimals = token_holdings.decimals;
-    println!("Token decimals: {}", token_decimals);
 
     // Get bonding curve data and calculate amounts
     let bonding_curve_data =
@@ -61,23 +56,15 @@ pub async fn sell(
         bonding_curve_data.calculate_sell_amount(token_quantity, token_decimals);
     let min_sol_output = (expected_sol_output as f64 * (1.0 - slippage)) as u64;
 
-    // Log calculations
-    println!(
-        "Expected SOL output: {} SOL",
-        expected_sol_output as f64 / LAMPORTS_PER_SOL as f64
-    );
-    println!(
-        "Minimum SOL output with slippage: {} SOL",
-        min_sol_output as f64 / LAMPORTS_PER_SOL as f64
-    );
 
     let (instruction, compute_budget_instructions) = build_sell_instructions(
+        rpc_client,
         user_address,
         pump_fun_token_container,
         token_account_container,
         token_amount,
         min_sol_output,
-    )?;
+    ).await?;
 
     let signature = send_sell_transaction(
         rpc_client,
@@ -90,7 +77,6 @@ pub async fn sell(
 
     match confirm_transaction(rpc_client, &signature, 20, 3).await {
         Ok(true) => {
-            println!("Transaction confirmed successfully!");
             Ok(SellResult {
                 signature: signature.to_string(),
                 token_amount,
@@ -102,13 +88,13 @@ pub async fn sell(
             "Transaction failed during confirmation".to_string(),
         )),
         Err(e) => {
-            println!("Error during confirmation: {:?}", e);
             Err(e)
         }
     }
 }
 
-fn build_sell_instructions(
+async fn build_sell_instructions(
+    rpc_client: &RpcClient,
     user_address: Pubkey,
     pump_fun_token_container: &PumpFunTokenContainer,
     token_account_container: &TokenAccountOwnerContainer,
@@ -124,22 +110,26 @@ fn build_sell_instructions(
     let (bonding_curve, associated_bonding_curve) =
         derive_trading_accounts(&pump_fun_token_container.mint_address)?;
 
+    // Derive the creator vault address
+    let creator_vault = super::utils::derive_creator_vault(rpc_client, &pump_fun_token_container.mint_address).await?;
+
+    // Build accounts with creator vault at position 8 (where constraint expects it)
     let accounts = vec![
-        AccountMeta::new_readonly(GLOBAL, false),
-        AccountMeta::new(FEE_RECIPIENT, false),
-        AccountMeta::new_readonly(pump_fun_token_container.mint_address, false),
-        AccountMeta::new(bonding_curve, false),
-        AccountMeta::new(associated_bonding_curve, false),
-        AccountMeta::new(
+        AccountMeta::new_readonly(GLOBAL, false),          // 0: global
+        AccountMeta::new(FEE_RECIPIENT, false),           // 1: feeRecipient
+        AccountMeta::new_readonly(pump_fun_token_container.mint_address, false), // 2: mint
+        AccountMeta::new(bonding_curve, false),           // 3: bonding_curve
+        AccountMeta::new(associated_bonding_curve, false), // 4: associatedBondingCurve
+        AccountMeta::new(                                 // 5: associatedUser
             token_account_container.token_account_address.unwrap(),
             false,
         ),
-        AccountMeta::new(user_address, true),
-        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),
-        AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM_ID, false),
-        AccountMeta::new_readonly(TOKEN_KEG_PROGRAM_ID, false),
-        AccountMeta::new_readonly(EVENT_AUTHORITY, false),
-        AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false),
+        AccountMeta::new(user_address, true),             // 6: user
+        AccountMeta::new_readonly(SYSTEM_PROGRAM, false), // 7: system_program
+        AccountMeta::new(creator_vault, false),           // 8: creator_vault (where constraint expects it)
+        AccountMeta::new_readonly(TOKEN_KEG_PROGRAM_ID, false), // 9: token_program
+        AccountMeta::new_readonly(EVENT_AUTHORITY, false), // 10: event_authority
+        AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false), // 11: program
     ];
 
     let instruction = Instruction::new_with_bytes(PUMP_FUN_PROGRAM_ID, &data, accounts);
@@ -187,7 +177,6 @@ pub async fn process_sell_request(
     server_keypair: &Keypair,
     request: SellRequest,
 ) -> Result<SellResponse, AppError> {
-    println!("Processing sell request: {:?}", request);
 
     let token_address = Pubkey::from_str(&request.token_address)
         .map_err(|e| AppError::BadRequest(format!("Invalid token address: {}", e)))?;

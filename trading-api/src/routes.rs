@@ -13,6 +13,7 @@ use trading_common::{
     data::{get_metadata, get_server_keypair},
     error::AppError,
     event_system::Event,
+    middleware::{ValidatedJson, validate_allowed_tokens_if_used},
     models::{
         BuyRequest, BuyResponse, SellRequest, SellResponse, SettingsUpdateNotification,
         TradeExecution, TradeExecutionNotification, WalletStateChange, WalletStateChangeType,
@@ -46,7 +47,7 @@ pub async fn get_tracked_wallets(
 
 pub async fn add_tracked_wallet(
     State(state): State<AppState>,
-    Json(wallet): Json<TrackedWallet>,
+    ValidatedJson(wallet): ValidatedJson<TrackedWallet>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let wallet_address = wallet.wallet_address.clone();
     let result = state
@@ -181,8 +182,10 @@ pub async fn get_copy_trade_settings(
 
 pub async fn create_copy_trade_settings(
     State(state): State<AppState>,
-    Json(settings): Json<CopyTradeSettings>,
+    ValidatedJson(settings): ValidatedJson<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Additional validation for optional fields that couldn't be validated with derive
+    validate_allowed_tokens_if_used(&settings)?;
     let tracked_wallet_id = settings.tracked_wallet_id;
     let result = state
         .supabase_client
@@ -210,8 +213,10 @@ pub async fn create_copy_trade_settings(
 
 pub async fn update_copy_trade_settings(
     State(state): State<AppState>,
-    Json(settings): Json<CopyTradeSettings>,
+    ValidatedJson(settings): ValidatedJson<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Additional validation for optional fields that couldn't be validated with derive
+    validate_allowed_tokens_if_used(&settings)?;
     println!("update_copy_trade_settings() called");
     let result = state
         .supabase_client
@@ -277,7 +282,7 @@ pub async fn get_transaction_history(
 
 pub async fn pump_fun_buy(
     State(state): State<AppState>,
-    Json(request): Json<BuyRequest>,
+    ValidatedJson(request): ValidatedJson<BuyRequest>,
 ) -> Result<Json<BuyResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
@@ -352,7 +357,7 @@ pub async fn pump_fun_buy(
 
 pub async fn pump_fun_sell(
     State(state): State<AppState>,
-    Json(request): Json<SellRequest>,
+    ValidatedJson(request): ValidatedJson<SellRequest>,
 ) -> Result<Json<SellResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
@@ -427,7 +432,7 @@ pub async fn pump_fun_sell(
 
 pub async fn raydium_buy(
     State(state): State<AppState>,
-    Json(request): Json<BuyRequest>,
+    ValidatedJson(request): ValidatedJson<BuyRequest>,
 ) -> Result<Json<BuyResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
@@ -503,7 +508,7 @@ pub async fn raydium_buy(
 
 pub async fn raydium_sell(
     State(state): State<AppState>,
-    Json(request): Json<SellRequest>,
+    ValidatedJson(request): ValidatedJson<SellRequest>,
 ) -> Result<Json<SellResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
@@ -577,7 +582,7 @@ pub async fn raydium_sell(
 
 pub async fn jupiter_buy(
     State(state): State<AppState>,
-    Json(request): Json<BuyRequest>,
+    ValidatedJson(request): ValidatedJson<BuyRequest>,
 ) -> Result<Json<BuyResponse>, AppError> {
     println!("Processing Jupiter buy request: {:?}", request);
     let rpc_client = state.rpc_client.load();
@@ -654,7 +659,7 @@ pub async fn jupiter_buy(
 
 pub async fn jupiter_sell(
     State(state): State<AppState>,
-    Json(request): Json<SellRequest>,
+    ValidatedJson(request): ValidatedJson<SellRequest>,
 ) -> Result<Json<SellResponse>, AppError> {
     println!("Processing Jupiter sell request: {:?}", request);
     let rpc_client = state.rpc_client.load();

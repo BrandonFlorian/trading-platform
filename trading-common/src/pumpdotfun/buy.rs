@@ -45,12 +45,6 @@ pub async fn buy(
         ));
     }
 
-    println!(
-        "Initiator {} >> Buy: Token: {} Slippage %: {}",
-        user_address,
-        token_account_container.mint_address,
-        slippage * 100.0
-    );
 
     // Get bonding curve data directly from chain
     let bonding_curve_data =
@@ -64,24 +58,16 @@ pub async fn buy(
     let max_token_output = token_out as f64 / 1e6;
     let min_token_output = max_token_output * (1.0 - slippage);
 
-    println!(
-        "Token Output >> Min: {:.8}, Max: {:.8}",
-        min_token_output, max_token_output
-    );
-
-    println!(
-        "Sol in (lamports): {}, Token out: {}, Max cost: {}",
-        sol_in_lamports, token_out, max_sol_cost
-    );
 
     // Build and send transaction
     let (instruction, compute_budget_instructions) = build_buy_instructions(
+        rpc_client,
         user_address,
         pump_fun_token_container,
         token_account_container,
         token_out,
         max_sol_cost,
-    )?;
+    ).await?;
 
     let signature = send_buy_transaction(
         rpc_client,
@@ -92,12 +78,10 @@ pub async fn buy(
     )
     .await?;
 
-    println!("Transaction signature: {}", signature);
 
     // Confirm transaction with retries
     match confirm_transaction(rpc_client, &signature, 20, 3).await {
         Ok(true) => {
-            println!("Buy transaction confirmed successfully!");
             Ok(BuyResult {
                 signature: signature.to_string(),
                 token_out,
@@ -108,13 +92,13 @@ pub async fn buy(
             "Transaction failed during confirmation".to_string(),
         )),
         Err(e) => {
-            println!("Error during confirmation: {:?}", e);
             Err(e)
         }
     }
 }
 
-fn build_buy_instructions(
+async fn build_buy_instructions(
+    rpc_client: &RpcClient,
     user_address: Pubkey,
     pump_fun_token_container: &PumpFunTokenContainer,
     token_account_container: &TokenAccountOwnerContainer,
@@ -131,22 +115,26 @@ fn build_buy_instructions(
     let (bonding_curve, associated_bonding_curve) =
         derive_trading_accounts(&pump_fun_token_container.mint_address)?;
 
+    // Derive the creator vault address
+    let creator_vault = super::utils::derive_creator_vault(rpc_client, &pump_fun_token_container.mint_address).await?;
+
+    // Build accounts according to current pump.fun program (12 accounts total)
     let accounts = vec![
-        AccountMeta::new_readonly(GLOBAL, false),
-        AccountMeta::new(FEE_RECIPIENT, false),
-        AccountMeta::new_readonly(pump_fun_token_container.mint_address, false),
-        AccountMeta::new(bonding_curve, false),
-        AccountMeta::new(associated_bonding_curve, false),
-        AccountMeta::new(
+        AccountMeta::new_readonly(GLOBAL, false),          // global
+        AccountMeta::new(FEE_RECIPIENT, false),           // fee_recipient
+        AccountMeta::new_readonly(pump_fun_token_container.mint_address, false), // mint
+        AccountMeta::new(bonding_curve, false),           // bonding_curve
+        AccountMeta::new(associated_bonding_curve, false), // associated_bonding_curve
+        AccountMeta::new(                                 // associated_user
             token_account_container.token_account_address.unwrap(),
             false,
         ),
-        AccountMeta::new(user_address, true),
-        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),
-        AccountMeta::new_readonly(TOKEN_KEG_PROGRAM_ID, false),
-        AccountMeta::new_readonly(solana_program::sysvar::rent::ID, false),
-        AccountMeta::new_readonly(EVENT_AUTHORITY, false),
-        AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false),
+        AccountMeta::new(user_address, true),             // user
+        AccountMeta::new_readonly(SYSTEM_PROGRAM, false), // system_program
+        AccountMeta::new_readonly(TOKEN_KEG_PROGRAM_ID, false), // token_program
+        AccountMeta::new(creator_vault, false),           // creator_vault - required at position 9
+        AccountMeta::new_readonly(EVENT_AUTHORITY, false), // event_authority
+        AccountMeta::new_readonly(PUMP_FUN_PROGRAM_ID, false), // program
     ];
 
     // Create instructions
@@ -195,11 +183,8 @@ pub async fn process_buy_request(
     server_keypair: &Keypair,
     request: BuyRequest,
 ) -> Result<BuyResponse, AppError> {
-    println!("Processing buy request");
     let token_address = Pubkey::from_str(&request.token_address)
         .map_err(|e| AppError::BadRequest(format!("Invalid token address: {}", e)))?;
-
-    println!("Token address: {:?}", token_address);
 
     let pump_fun_token_container = PumpFunTokenContainer {
         mint_address: token_address,
