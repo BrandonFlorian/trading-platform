@@ -18,11 +18,8 @@ pub async fn get_bonding_curve_data(
     let (bonding_curve, _) = derive_bonding_curve_address(mint);
     let account_data = rpc_client.get_account_data(&bonding_curve)?;
     
-    // Manually construct the struct from the account data
-    // since we know the layout and can extract the fields we need
-    
-    
-    if account_data.len() >= 81 {  // Updated minimum length to include creator field (32 bytes)
+    // Parse bonding curve account data based on pump.fun IDL structure
+    if account_data.len() >= 81 {  // Minimum length includes creator field (32 bytes)
         let virtual_token_reserves = u64::from_le_bytes(account_data[8..16].try_into().unwrap());
         let virtual_sol_reserves = u64::from_le_bytes(account_data[16..24].try_into().unwrap());
         let real_token_reserves = u64::from_le_bytes(account_data[24..32].try_into().unwrap());
@@ -30,9 +27,8 @@ pub async fn get_bonding_curve_data(
         let token_total_supply = u64::from_le_bytes(account_data[40..48].try_into().unwrap());
         let complete = account_data[48] != 0;
         
-        // Try creator at different offsets
-        let creator_offset_49 = Pubkey::new_from_array(account_data[49..81].try_into().unwrap());
-        
+        // Extract creator address from bonding curve data
+        let creator = Pubkey::new_from_array(account_data[49..81].try_into().unwrap());
         
         Ok(BondingCurveData {
             discriminator: account_data[0..8].try_into().unwrap(),
@@ -42,7 +38,7 @@ pub async fn get_bonding_curve_data(
             real_sol_reserves,
             token_total_supply,
             complete,
-            creator: creator_offset_49,
+            creator,
         })
     } else {
         Err(anyhow::anyhow!("Account data too short: {} bytes", account_data.len()).into())
@@ -175,12 +171,11 @@ pub async fn derive_creator_vault(
     mint: &Pubkey
 ) -> Result<Pubkey, AppError> {
     // The creator vault is a PDA derived from the creator address
-    // According to pump_fun_py, the pattern is: ["creator-vault", creator_bytes]
+    // Uses the pattern: ["creator-vault", creator_pubkey_bytes]
     
     let bonding_curve_data = get_bonding_curve_data(rpc_client, mint).await
         .map_err(|e| AppError::RequestError(format!("Failed to get bonding curve data: {}", e)))?;
     
-    // CRITICAL: Use "creator-vault" with hyphen, not underscore!
     let (creator_vault, _bump) = Pubkey::find_program_address(
         &[b"creator-vault", bonding_curve_data.creator.as_ref()],
         &PUMP_FUN_PROGRAM_ID,

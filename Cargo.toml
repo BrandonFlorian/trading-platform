@@ -6,7 +6,6 @@ members = [
     "trading-wallet",
     "trading-price-feed",
     "trading-sol-price-feed",
-    "test_pattern_discovery",
 ]
 resolver = "2"
 [workspace.dependencies]
