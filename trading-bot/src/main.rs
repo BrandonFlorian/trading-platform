@@ -10,7 +10,7 @@ use trading_common::{
     database::SupabaseClient, event_system::EventSystem, server_wallet_client::WalletClient,
     websocket::WebSocketServer,
 };
-use trading_common::{ConnectionMonitor, RedisConnection};
+use trading_common::{redis::RedisPool, ConnectionMonitor};
 use wallet_monitor::WalletMonitor;
 
 #[tokio::main]
@@ -33,45 +33,67 @@ async fn main() -> Result<()> {
 
     // Supabase
     let supabase_url = env::var("SUPABASE_URL").context("SUPABASE_URL must be set")?;
+    println!("Supabase URL: {}", supabase_url);
     let supabase_key =
         env::var("SUPABASE_ANON_PUBLIC_KEY").context("SUPABASE_ANON_PUBLIC_KEY must be set")?;
+    println!("Supabase anon public key: {}", supabase_key);
     let supabase_service_role_key =
         env::var("SUPABASE_SERVICE_ROLE_KEY").context("SUPABASE_SERVICE_ROLE_KEY must be set")?;
-
+    println!("Supabase service role key: {}", supabase_service_role_key);
     // Redis
     let redis_url = env::var("REDIS_URL").context("REDIS_URL must be set")?;
-
+    println!("Redis URL: {}", redis_url);
     // Event system
     let event_system = Arc::new(EventSystem::new());
 
     // Connection monitor
     let connection_monitor = Arc::new(ConnectionMonitor::new(event_system.clone()));
 
-    // Wallet client
-    let wallet_addr =
-        std::env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
-    let wallet_client =
-        Arc::new(WalletClient::connect(wallet_addr, connection_monitor.clone()).await?);
+    // Initialize Redis Pool
+    println!("Initializing Redis pool...");
+    let redis_pool = Arc::new(
+        RedisPool::new(&redis_url, connection_monitor.clone())
+            .await
+            .context("Failed to create Redis pool")?,
+    );
 
-    // Subscribe to settings updates from the API
-    println!("Setting up Redis subscription...");
-    if let Err(e) = RedisConnection::subscribe_to_updates(&redis_url, event_system.clone()).await {
+    // Subscribe to updates
+    println!("Setting up Redis subscriptions...");
+    if let Err(e) = redis_pool.subscribe_to_updates().await {
         eprintln!("Failed to set up Redis subscription: {}", e);
     } else {
         println!("Redis subscription set up successfully");
     }
 
+    // Wallet client
+    let wallet_addr =
+        std::env::var("WALLET_SERVICE_URL").context("WALLET_SERVICE_URL must be set")?;
+    let wallet_client =
+        Arc::new(WalletClient::connect(wallet_addr.clone(), connection_monitor.clone()).await?);
+
+    println!(
+        "Wallet client connected successfully with address: {}",
+        wallet_addr
+    );
+
     // Supabase client
-    let supabase_client = Arc::new(SupabaseClient::new(
+    let mut supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
         event_system.clone(),
-    ));
+    );
+    
+    // Initialize user
+    supabase_client.initialize_user().await?;
+    let supabase_client = Arc::new(supabase_client);
 
+    println!("Supabase client initialized successfully");
     // RPC client
     let rpc_client = Arc::new(RpcClient::new(rpc_http_url));
+
+    println!("RPC client initialized successfully");
 
     // Wallet monitor
     let mut monitor = WalletMonitor::new(
@@ -85,6 +107,8 @@ async fn main() -> Result<()> {
     )
     .await?;
 
+    println!("Wallet monitor initialized successfully");
+
     // WebSocket server
     let websocket_port = env::var("WS_PORT")
         .unwrap_or_else(|_| "3001".to_string())
@@ -96,6 +120,8 @@ async fn main() -> Result<()> {
         websocket_port,
         Arc::clone(&connection_monitor),
     );
+
+    println!("WebSocket server initialized successfully");
 
     //Start WebSocket server
     tokio::spawn(async move {
@@ -118,6 +144,9 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Store redis_pool in a variable that will live until shutdown
+    let redis_pool_for_shutdown = Arc::clone(&redis_pool);
+
     // Handle shutdown signals
     tokio::select! {
         _ = signal::ctrl_c() => {
@@ -135,6 +164,9 @@ async fn main() -> Result<()> {
     if let Err(e) = shutdown_monitor.stop().await {
         eprintln!("Error during shutdown: {:?}", e);
     }
+
+    // Clean up Redis connections
+    drop(redis_pool_for_shutdown);
     println!("Shutdown complete.");
 
     Ok(())

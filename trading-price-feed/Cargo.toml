@@ -24,7 +24,6 @@ borsh = { workspace = true }
 tokio-stream = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-parking_lot = { workspace = true }
-tonic = { workspace = true }
-prost = { workspace = true }
 backoff = { workspace = true }
+tokio-tungstenite = { workspace = true }
+base64 = { workspace = true }

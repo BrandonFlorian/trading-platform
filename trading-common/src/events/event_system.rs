@@ -28,13 +28,15 @@ pub enum Event {
     PriceUpdate(PriceUpdateNotification),
     SolPriceUpdate(SolPriceUpdateNotification),
 }
+
+#[derive(Debug)]
 pub struct EventSystem {
     sender: broadcast::Sender<Event>,
 }
 
 impl EventSystem {
     pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(200);
+        let (sender, _) = broadcast::channel(2000);
         Self { sender }
     }
 

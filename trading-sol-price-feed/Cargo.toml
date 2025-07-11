@@ -16,11 +16,11 @@ trading-common = { path = "../trading-common" }
 futures-util = { workspace = true }
 solana-client = { workspace = true }
 solana-sdk = { workspace = true }
-pyth-sdk-solana = "0.10.3"
+pyth-sdk-solana = "0.10.5"
 redis = { workspace = true }
 tokio-stream = { workspace = true }
 chrono = { workspace = true }
-parking_lot = { workspace = true }
+# parking_lot = { workspace = true } # REMOVED - using tokio::sync instead
 uuid = { workspace = true }
 tracing-subscriber = { workspace = true }
 hex = { workspace = true }

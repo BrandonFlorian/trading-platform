@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use trading_common::ConnectionMonitor;
 use trading_common::{
-    data::get_server_keypair, event_system::EventSystem, redis_connection::RedisConnection,
+    data::get_server_keypair, event_system::EventSystem, redis::RedisPool,
     server_wallet_client::WalletClient, SupabaseClient,
 };
 
@@ -24,7 +24,7 @@ mod routes;
 struct AppState {
     rpc_client: Arc<ArcSwap<RpcClient>>,
     supabase_client: SupabaseClient,
-    redis_connection: RedisConnection,
+    redis_connection: Arc<RedisPool>,
     wallet_client: WalletClient,
     event_system: Arc<EventSystem>,
 }
@@ -66,13 +66,16 @@ async fn main() -> Result<()> {
         WalletClient::connect(wallet_service_url, connection_monitor.clone()).await?;
 
     // Create supabase client
-    let supabase_client = SupabaseClient::new(
+    let mut supabase_client = SupabaseClient::new(
         &supabase_url,
         &supabase_key,
         &supabase_service_role_key,
         &user_id,
         event_system.clone(),
     );
+    
+    // Initialize user
+    supabase_client.initialize_user().await?;
 
     // Create rpc client
     let rpc_client = RpcClient::new(rpc_url);
@@ -80,13 +83,13 @@ async fn main() -> Result<()> {
 
     println!("redis_url: {}", redis_url);
     // Create redis connection
-    let redis_connection = RedisConnection::new(&redis_url, connection_monitor.clone()).await?;
+    let redis_connection = RedisPool::new(&redis_url, connection_monitor.clone()).await?;
     println!("redis_connection created");
 
     let state = AppState {
         rpc_client: shared_rpc_client,
         supabase_client,
-        redis_connection,
+        redis_connection: Arc::new(redis_connection),
         wallet_client,
         event_system,
     };

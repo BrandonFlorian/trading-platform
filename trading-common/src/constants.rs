@@ -17,7 +17,8 @@ pub const MOONSHOT_PROGRAM: &str = "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG"
 pub const METADATA_PROGRAM_ID: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
-pub const PRICE_UPDATES_CHANNEL: &str = "price_updates";
+// Redis channels
+pub const TOKEN_PRICE_CHANNEL: &str = "token_price_updates";
+pub const SOL_PRICE_CHANNEL: &str = "sol_price_updates";
 pub const SETTINGS_CHANNEL: &str = "copy_trade_settings";
 pub const TRACKED_WALLETS_CHANNEL: &str = "tracked_wallets";
-//pub const RAYDIUM_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";

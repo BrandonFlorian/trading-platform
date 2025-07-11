@@ -21,7 +21,7 @@ pub fn create_router(service: Arc<SolPriceFeedService>) -> Router {
 async fn get_price(
     State(service): State<Arc<SolPriceFeedService>>,
 ) -> Result<Json<Option<trading_common::models::SolPriceUpdate>>, AppError> {
-    Ok(Json(service.get_current_price()))
+    Ok(Json(service.get_current_price().await))
 }
 
 async fn subscribe_price_feed(

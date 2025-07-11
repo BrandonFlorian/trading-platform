@@ -13,6 +13,7 @@ use trading_common::{
     data::{get_metadata, get_server_keypair},
     error::AppError,
     event_system::Event,
+    middleware::{ValidatedJson, validate_allowed_tokens_if_used},
     models::{
         BuyRequest, BuyResponse, SellRequest, SellResponse, SettingsUpdateNotification,
         TradeExecution, TradeExecutionNotification, WalletStateChange, WalletStateChangeType,
@@ -45,8 +46,8 @@ pub async fn get_tracked_wallets(
 }
 
 pub async fn add_tracked_wallet(
-    State(mut state): State<AppState>,
-    Json(wallet): Json<TrackedWallet>,
+    State(state): State<AppState>,
+    ValidatedJson(wallet): ValidatedJson<TrackedWallet>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let wallet_address = wallet.wallet_address.clone();
     let result = state
@@ -56,7 +57,7 @@ pub async fn add_tracked_wallet(
 
     state
         .redis_connection
-        .publish_tracked_wallet_update(&wallet, "add")
+        .publish_tracked_wallet_update(&wallet_address, "add")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -74,7 +75,7 @@ pub async fn add_tracked_wallet(
 }
 
 pub async fn archive_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state
@@ -84,7 +85,7 @@ pub async fn archive_tracked_wallet(
 
     state
         .redis_connection
-        .publish_wallet_address_update(&wallet_address, "archive")
+        .publish_tracked_wallet_update(&wallet_address, "archive")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -98,7 +99,7 @@ pub async fn archive_tracked_wallet(
 }
 
 pub async fn unarchive_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state
@@ -108,7 +109,7 @@ pub async fn unarchive_tracked_wallet(
 
     state
         .redis_connection
-        .publish_wallet_address_update(&wallet_address, "unarchive")
+        .publish_tracked_wallet_update(&wallet_address, "unarchive")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -122,7 +123,7 @@ pub async fn unarchive_tracked_wallet(
 }
 
 pub async fn delete_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Path(wallet_address): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state
@@ -132,7 +133,7 @@ pub async fn delete_tracked_wallet(
 
     state
         .redis_connection
-        .publish_wallet_address_update(&wallet_address.to_string(), "delete")
+        .publish_tracked_wallet_update(&wallet_address.to_string(), "delete")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -146,7 +147,7 @@ pub async fn delete_tracked_wallet(
 }
 
 pub async fn update_tracked_wallet(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Json(update): Json<TrackedWallet>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let wallet_address = update.wallet_address.clone();
@@ -157,7 +158,7 @@ pub async fn update_tracked_wallet(
 
     state
         .redis_connection
-        .publish_tracked_wallet_update(&update, "update")
+        .publish_tracked_wallet_update(&update.wallet_address, "update")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -180,9 +181,11 @@ pub async fn get_copy_trade_settings(
 }
 
 pub async fn create_copy_trade_settings(
-    State(mut state): State<AppState>,
-    Json(settings): Json<CopyTradeSettings>,
+    State(state): State<AppState>,
+    ValidatedJson(settings): ValidatedJson<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Additional validation for optional fields that couldn't be validated with derive
+    validate_allowed_tokens_if_used(&settings)?;
     let tracked_wallet_id = settings.tracked_wallet_id;
     let result = state
         .supabase_client
@@ -191,7 +194,7 @@ pub async fn create_copy_trade_settings(
 
     state
         .redis_connection
-        .publish_settings_update(&settings)
+        .publish_settings_update(&settings, "create")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -209,9 +212,11 @@ pub async fn create_copy_trade_settings(
 }
 
 pub async fn update_copy_trade_settings(
-    State(mut state): State<AppState>,
-    Json(settings): Json<CopyTradeSettings>,
+    State(state): State<AppState>,
+    ValidatedJson(settings): ValidatedJson<CopyTradeSettings>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Additional validation for optional fields that couldn't be validated with derive
+    validate_allowed_tokens_if_used(&settings)?;
     println!("update_copy_trade_settings() called");
     let result = state
         .supabase_client
@@ -220,7 +225,7 @@ pub async fn update_copy_trade_settings(
 
     state
         .redis_connection
-        .publish_settings_update(&settings)
+        .publish_settings_update(&settings, "update")
         .await
         .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -238,7 +243,7 @@ pub async fn update_copy_trade_settings(
 }
 
 pub async fn delete_copy_trade_settings(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Path(tracked_wallet_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state
@@ -246,11 +251,15 @@ pub async fn delete_copy_trade_settings(
         .delete_copy_trade_settings(tracked_wallet_id)
         .await?;
 
-    state
-        .redis_connection
-        .publish_settings_delete(&tracked_wallet_id.to_string())
-        .await
-        .map_err(|e| AppError::RedisError(e.to_string()))?;
+    let settings = state.supabase_client.get_copy_trade_settings().await?;
+
+    for setting in settings {
+        state
+            .redis_connection
+            .publish_settings_update(&setting, "delete")
+            .await
+            .map_err(|e| AppError::RedisError(e.to_string()))?;
+    }
 
     state
         .event_system
@@ -273,7 +282,7 @@ pub async fn get_transaction_history(
 
 pub async fn pump_fun_buy(
     State(state): State<AppState>,
-    Json(request): Json<BuyRequest>,
+    ValidatedJson(request): ValidatedJson<BuyRequest>,
 ) -> Result<Json<BuyResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
@@ -348,7 +357,7 @@ pub async fn pump_fun_buy(
 
 pub async fn pump_fun_sell(
     State(state): State<AppState>,
-    Json(request): Json<SellRequest>,
+    ValidatedJson(request): ValidatedJson<SellRequest>,
 ) -> Result<Json<SellResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
@@ -423,7 +432,7 @@ pub async fn pump_fun_sell(
 
 pub async fn raydium_buy(
     State(state): State<AppState>,
-    Json(request): Json<BuyRequest>,
+    ValidatedJson(request): ValidatedJson<BuyRequest>,
 ) -> Result<Json<BuyResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
@@ -499,7 +508,7 @@ pub async fn raydium_buy(
 
 pub async fn raydium_sell(
     State(state): State<AppState>,
-    Json(request): Json<SellRequest>,
+    ValidatedJson(request): ValidatedJson<SellRequest>,
 ) -> Result<Json<SellResponse>, AppError> {
     let rpc_client = state.rpc_client.load();
     let server_keypair = get_server_keypair();
@@ -573,7 +582,7 @@ pub async fn raydium_sell(
 
 pub async fn jupiter_buy(
     State(state): State<AppState>,
-    Json(request): Json<BuyRequest>,
+    ValidatedJson(request): ValidatedJson<BuyRequest>,
 ) -> Result<Json<BuyResponse>, AppError> {
     println!("Processing Jupiter buy request: {:?}", request);
     let rpc_client = state.rpc_client.load();
@@ -650,7 +659,7 @@ pub async fn jupiter_buy(
 
 pub async fn jupiter_sell(
     State(state): State<AppState>,
-    Json(request): Json<SellRequest>,
+    ValidatedJson(request): ValidatedJson<SellRequest>,
 ) -> Result<Json<SellResponse>, AppError> {
     println!("Processing Jupiter sell request: {:?}", request);
     let rpc_client = state.rpc_client.load();

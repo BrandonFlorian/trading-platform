@@ -26,4 +26,4 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 spl-associated-token-account = { workspace = true }
 solana-transaction-status = { workspace = true }
-parking_lot = { workspace = true }
+# parking_lot = { workspace = true } # REMOVED - using tokio::sync instead

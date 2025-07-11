@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use validator::Validate;
 
 use crate::dex::DexType;
 
@@ -77,31 +78,45 @@ pub struct WalletStateNotification {
     pub type_: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub struct TrackedWallet {
     pub id: Option<Uuid>,
-    pub user_id: Option<String>,
+    pub user_id: Option<Uuid>,
+
+    #[validate(custom(function = "crate::validation::validate_solana_address"))]
     pub wallet_address: String,
+
     pub is_active: bool,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub struct CopyTradeSettings {
     pub id: Option<Uuid>,
-    pub user_id: Option<String>,
+    pub user_id: Option<Uuid>,
     pub tracked_wallet_id: Uuid,
     pub is_enabled: bool,
+
+    #[validate(custom(function = "crate::validation::validate_sol_amount_safe"))]
     pub trade_amount_sol: f64,
+
+    #[validate(custom(function = "crate::validation::validate_slippage_percentage"))]
     pub max_slippage: f64,
+
     #[serde(default)]
+    #[validate(custom(function = "crate::validation::validate_max_positions"))]
     pub max_open_positions: i32,
+
     pub allowed_tokens: Option<Vec<String>>,
+
     pub use_allowed_tokens_list: bool,
     pub allow_additional_buys: bool,
     pub match_sell_percentage: bool,
+
+    #[validate(custom(function = "crate::validation::validate_min_sol_balance"))]
     pub min_sol_balance: f64,
+
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -113,7 +128,7 @@ impl Default for CopyTradeSettings {
             user_id: None,
             tracked_wallet_id: Uuid::nil(),
             is_enabled: false,
-            trade_amount_sol: 0.0,
+            trade_amount_sol: 0.01,
             max_slippage: 0.1,
             max_open_positions: 1,
             allowed_tokens: None,
@@ -192,10 +207,15 @@ pub struct TokenTransactionInfo {
     pub seller: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub struct BuyRequest {
+    #[validate(custom(function = "crate::validation::validate_solana_address"))]
     pub token_address: String,
+
+    #[validate(custom(function = "crate::validation::validate_sol_amount_safe"))]
     pub sol_quantity: f64,
+
+    #[validate(custom(function = "crate::validation::validate_slippage_percentage"))]
     pub slippage_tolerance: f64,
 }
 
@@ -210,10 +230,15 @@ pub struct BuyResponse {
 }
 
 //sell request
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub struct SellRequest {
+    #[validate(custom(function = "crate::validation::validate_solana_address"))]
     pub token_address: String,
+
+    #[validate(custom(function = "crate::validation::validate_token_quantity"))]
     pub token_quantity: f64,
+
+    #[validate(custom(function = "crate::validation::validate_slippage_percentage"))]
     pub slippage_tolerance: f64,
 }
 
@@ -320,20 +345,46 @@ impl ConnectionStatusChange {
     }
 }
 
+/// Price update for a token
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceUpdate {
+    /// Token address (base mint)
     pub token_address: String,
+
+    /// Price in SOL
     pub price_sol: f64,
+
+    /// Price in USD
     pub price_usd: Option<f64>,
-    pub timestamp: i64,
-    pub dex_type: DexType,
-    pub liquidity: Option<f64>,
-    pub liquidity_usd: Option<f64>,
+
+    /// Market cap in USD
     pub market_cap: f64,
+
+    /// Timestamp of update
+    pub timestamp: i64,
+
+    /// DEx type
+    pub dex_type: DexType,
+
+    /// Liquidity in SOL
+    pub liquidity: Option<f64>,
+
+    /// Liquidity in USD
+    pub liquidity_usd: Option<f64>,
+
+    /// Pool address
     pub pool_address: Option<String>,
+
+    /// 24h volume in USD
     pub volume_24h: Option<f64>,
+
+    /// 6h volume in USD
     pub volume_6h: Option<f64>,
+
+    /// 1h volume in USD
     pub volume_1h: Option<f64>,
+
+    /// 5m volume in USD
     pub volume_5m: Option<f64>,
 }
 

@@ -7,6 +7,7 @@ use crate::{
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+#[derive(Debug)]
 pub struct ConnectionMonitor {
     event_system: Arc<EventSystem>,
     statuses: Arc<RwLock<Vec<ConnectionStatusChange>>>,

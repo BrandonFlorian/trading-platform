@@ -18,13 +18,14 @@ pub struct TokenMetadata {
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct BondingCurveData {
-    pub padding: [u8; 8],
-    pub virtual_token_reserves: i64,
-    pub virtual_sol_reserves: i64,
-    pub real_token_reserves: i64,
-    pub real_sol_reserves: i64,
-    pub token_total_supply: i64,
+    pub discriminator: [u8; 8],        // Account discriminator
+    pub virtual_token_reserves: u64,
+    pub virtual_sol_reserves: u64,
+    pub real_token_reserves: u64,
+    pub real_sol_reserves: u64,
+    pub token_total_supply: u64,
     pub complete: bool,
+    pub creator: Pubkey,               // The creator of this bonding curve
 }
 
 impl BondingCurveData {
@@ -113,8 +114,8 @@ pub struct PumpFunCalcResult {
 
 impl PumpFunCalcResult {
     pub fn new(
-        virtual_token_reserves: i64,
-        virtual_sol_reserves: i64,
+        virtual_token_reserves: u64,
+        virtual_sol_reserves: u64,
         sol_quantity: f64,
         slippage: f64,
         _decimals: u8,
