@@ -1,0 +1,29 @@
+[package]
+name = "hyperliquid-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+redis = { workspace = true }
+rust_decimal = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+hyperliquid_rust_sdk = "0.6.0"
+ethers = "2.0.14"
+postgrest = { workspace = true }
+validator = { workspace = true }
+once_cell = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

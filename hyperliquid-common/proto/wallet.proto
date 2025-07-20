@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package hyperliquid.wallet;
+
+service WalletService {
+    rpc GetWalletAddress(GetWalletAddressRequest) returns (GetWalletAddressResponse);
+    rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+    rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+    rpc GetPositions(GetPositionsRequest) returns (GetPositionsResponse);
+    rpc GetAccountInfo(GetAccountInfoRequest) returns (GetAccountInfoResponse);
+    rpc GetUniverse(GetUniverseRequest) returns (GetUniverseResponse);
+}
+
+// Request/Response messages
+message GetWalletAddressRequest {}
+
+message GetWalletAddressResponse {
+    string address = 1;
+}
+
+message PlaceOrderRequest {
+    string asset = 1;
+    string side = 2; // "buy" or "sell"
+    string order_type = 3; // "market" or "limit"
+    double size = 4;
+    optional double price = 5;
+    optional bool reduce_only = 6;
+    optional string client_order_id = 7;
+    optional double slippage_tolerance = 8;
+    optional string time_in_force = 9; // "GTC", "IOC", "ALO"
+}
+
+message PlaceOrderResponse {
+    bool success = 1;
+    optional OrderInfo order = 2;
+    optional string error = 3;
+}
+
+message CancelOrderRequest {
+    string order_id = 1;
+    optional string asset = 2; // Required for client order ID cancellation
+}
+
+message CancelOrderResponse {
+    bool success = 1;
+    optional string error = 2;
+}
+
+message GetPositionsRequest {
+    optional string address = 1; // If not provided, uses wallet address
+}
+
+message GetPositionsResponse {
+    bool success = 1;
+    repeated Position positions = 2;
+    optional string error = 3;
+}
+
+message GetAccountInfoRequest {
+    optional string address = 1; // If not provided, uses wallet address
+}
+
+message GetAccountInfoResponse {
+    bool success = 1;
+    optional Account account = 2;
+    optional string error = 3;
+}
+
+message GetUniverseRequest {}
+
+message GetUniverseResponse {
+    bool success = 1;
+    repeated string assets = 2;
+    optional string error = 3;
+}
+
+// Data structures
+message OrderInfo {
+    string order_id = 1;
+    optional string client_order_id = 2;
+    string status = 3;
+    double filled_size = 4;
+    double remaining_size = 5;
+    optional double average_fill_price = 6;
+}
+
+message Position {
+    string asset = 1;
+    string side = 2; // "long" or "short"
+    double size = 3;
+    double entry_price = 4;
+    double mark_price = 5;
+    double unrealized_pnl = 6;
+    double margin = 7;
+    uint32 leverage = 8;
+}
+
+message Account {
+    string address = 1;
+    double equity = 2;
+    double margin_used = 3;
+    double available_margin = 4;
+    repeated Position positions = 5;
+}

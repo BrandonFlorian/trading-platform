@@ -1,0 +1,23 @@
+[package]
+name = "hyperliquid-wallet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hyperliquid-common = { path = "../hyperliquid-common" }
+trading-common = { path = "../trading-common" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenv = { workspace = true }
+rust_decimal = { workspace = true }
+hyperliquid_rust_sdk = "0.6.0"
+ethers = "2.0.14"
