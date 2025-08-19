@@ -1,5 +1,7 @@
 # Trading Platform
 
+NOTE: This is a WIP/R&D repo, and not really ready for production. I am working on a more professional version of it in a private repo, and am not likely to maintain this one as often. There are many areas for improvement and optimizations, but I am sure it is still valuable info for other developers :) 
+
 A multi-chain cryptocurrency trading platform supporting Solana DEXs and Hyperliquid perpetual futures.
 
 ## Architecture
