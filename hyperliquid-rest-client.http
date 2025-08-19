@@ -1,0 +1,101 @@
+@hyperliquidBaseUrl = http://localhost:3100
+@testAsset = ETH
+# Replace with actual order ID from open orders or stop loss placement
+@orderId = 35895628002
+@stopLossTriggerPrice = 3400.0
+@stopLossModifiedPrice = 3450.0
+
+
+### Health Check
+GET {{hyperliquidBaseUrl}}/health
+
+### Place Market Order - Long
+POST {{hyperliquidBaseUrl}}/api/trade/market
+Content-Type: application/json
+
+{
+    "asset": "{{testAsset}}",
+    "side": "long",
+    "size": 0.1,
+    "slippage_tolerance": 0.01
+}
+
+### Place Market Order - Short
+POST {{hyperliquidBaseUrl}}/api/trade/market
+Content-Type: application/json
+
+{
+    "asset": "{{testAsset}}",
+    "side": "short",
+    "size": 0.1,
+    "slippage_tolerance": 0.01
+}
+
+### Place Limit Order - Long
+POST {{hyperliquidBaseUrl}}/api/trade/limit
+Content-Type: application/json
+
+{
+    "asset": "{{testAsset}}",
+    "side": "long",
+    "size": 0.1,
+    "price": 3000.0,
+    "time_in_force": "GTC"
+}
+
+### Place Limit Order - Short
+POST {{hyperliquidBaseUrl}}/api/trade/limit
+Content-Type: application/json
+
+{
+    "asset": "{{testAsset}}",
+    "side": "short",
+    "size": 0.1,
+    "price": 3500.0,
+    "time_in_force": "GTC"
+}
+
+### Get Current Positions
+GET {{hyperliquidBaseUrl}}/api/positions
+
+### Get Account Info
+GET {{hyperliquidBaseUrl}}/api/account
+
+### Cancel Order
+POST {{hyperliquidBaseUrl}}/api/orders/{{orderId}}/cancel
+
+### Get Available Assets (Universe)
+GET {{hyperliquidBaseUrl}}/api/universe
+
+### Get Open Orders
+GET {{hyperliquidBaseUrl}}/api/orders
+
+### Place Stop Loss
+POST {{hyperliquidBaseUrl}}/api/stop-loss
+Content-Type: application/json
+
+{
+    "asset": "{{testAsset}}",
+    "trigger_price": {{stopLossTriggerPrice}}
+}
+
+### Modify Stop Loss
+POST {{hyperliquidBaseUrl}}/api/stop-loss/modify
+Content-Type: application/json
+
+{
+    "asset": "{{testAsset}}",
+    "order_id": "{{orderId}}",
+    "new_trigger_price": {{stopLossModifiedPrice}}
+}
+
+### Cancel Stop Loss
+POST {{hyperliquidBaseUrl}}/api/stop-loss/{{orderId}}/cancel
+Content-Type: application/json
+
+{
+    "asset": "{{testAsset}}"
+}
+
+### Get Stop Losses
+GET {{hyperliquidBaseUrl}}/api/stop-loss
